@@ -17,7 +17,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python 3.11
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -36,20 +36,6 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          echo "================================"
-          echo "ATI BOURSE BOT"
-          echo "RUN START"
-          echo "================================"
+          echo "ATI BOURSE BOT - START"
           python main.py
-          echo "================================"
-          echo "ATI BOURSE BOT"
-          echo "RUN FINISHED"
-          echo "================================"
-
-مسیر دقیق فایل:
-
-"ATI-Bourse-Bot → .github → workflows → main.yml"
-
-این نسخه هر ۵ دقیقه "main.py" بورس را اجرا می‌کند و کلیدهای تلگرام را از GitHub Secrets می‌گیرد.
-
-فقط دقت کن: این "main.yml" منطق خرید و فروش بورس را نمی‌سازد؛ آن قسمت باید داخل "main.py" باشد.
+          echo "ATI BOURSE BOT - FINISHED"
