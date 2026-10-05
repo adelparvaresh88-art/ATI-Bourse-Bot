@@ -6,45 +6,55 @@ import requests
 
 
 # ============================================================
-# ATI BOURSE BOT V1.2
+# ATI BOURSE BOT V1.3
 # بورس و فرابورس ایران
 # ============================================================
 
-VERSION = "ATI-BOURSE-V1.2"
+VERSION = "ATI-BOURSE-V1.3"
 REAL_TRADING = False
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-CONNECT_TIMEOUT = 6
-READ_TIMEOUT = 10
-RETRY_COUNT = 3
-RETRY_SLEEP = 2
+CONNECT_TIMEOUT = 5
+READ_TIMEOUT = 8
+RETRIES = 2
+
+
+# ============================================================
+# TIME
+# ============================================================
+
+def now_utc():
+    return datetime.now(timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
 
 
 # ============================================================
 # TELEGRAM
 # ============================================================
 
-def telegram_send(message):
+def telegram_send(text):
+
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("❌ TELEGRAM SETTINGS MISSING")
         return False
 
     url = (
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        "https://api.telegram.org/bot"
+        + TELEGRAM_TOKEN
+        + "/sendMessage"
     )
-
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-    }
 
     try:
         r = requests.post(
             url,
-            json=payload,
-            timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text,
+            },
+            timeout=(5, 8),
         )
 
         if r.ok:
@@ -55,189 +65,221 @@ def telegram_send(message):
         return False
 
     except Exception as e:
-        print("❌ TELEGRAM EXCEPTION:", str(e))
+        print("❌ TELEGRAM ERROR:", str(e))
         return False
 
 
 # ============================================================
-# TIME
+# HEADERS
 # ============================================================
 
-def now_utc():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Linux; Android 10) "
+        "AppleWebKit/537.36 "
+        "Chrome/120.0.0.0 Mobile Safari/537.36"
+    ),
+    "Accept": "application/json,text/plain,*/*",
+    "Referer": "https://www.tse.ir/",
+    "Connection": "close",
+}
 
 
 # ============================================================
-# TSETMC
+# SOURCE 1
+# TSETMC CDN MARKET WATCH
 # ============================================================
 
-def get_market_watch():
-    """
-    دریافت Market Watch از TSETMC
-    با timeout و retry محدود.
-    """
+def get_tsetmc_market_watch():
 
-    url = "https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch"
+    url = (
+        "https://cdn.tsetmc.com/api/"
+        "ClosingPrice/GetMarketWatch"
+    )
 
     params = {
         "market": 0,
-        "flow": 0,
-        "price": 0,
-        "order": 0,
-        "orderBy": 1,
-        "start": 0,
-        "length": 100,
+
+        "industrialGroup": "",
+
+        "paperTypes[0]": 1,
+        "paperTypes[1]": 2,
+        "paperTypes[2]": 3,
+        "paperTypes[3]": 4,
+        "paperTypes[4]": 5,
+        "paperTypes[5]": 6,
+        "paperTypes[6]": 7,
+        "paperTypes[7]": 8,
+        "paperTypes[8]": 9,
+
+        "showTraded": "false",
+        "withBestLimits": "false",
+        "hEven": 0,
+        "RefID": 0,
     }
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Linux; Android 10) "
-            "AppleWebKit/537.36 "
-            "Chrome/120.0 Mobile Safari/537.36"
-        ),
-        "Accept": "application/json,text/plain,*/*",
-        "Referer": "https://www.tsetmc.com/",
-        "Connection": "close",
-    }
-
-    for attempt in range(1, RETRY_COUNT + 1):
+    for attempt in range(1, RETRIES + 1):
 
         print(
-            f"🌐 TSETMC REQUEST "
-            f"{attempt}/{RETRY_COUNT}"
+            f"🌐 SOURCE 1 TSETMC "
+            f"{attempt}/{RETRIES}"
         )
 
         try:
 
-            response = requests.get(
+            r = requests.get(
                 url,
                 params=params,
-                headers=headers,
+                headers=HEADERS,
                 timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
             )
 
             print(
-                "📡 TSETMC HTTP:",
-                response.status_code
+                "📡 SOURCE 1 HTTP:",
+                r.status_code
             )
 
-            if response.status_code != 200:
-                print(
-                    "❌ TSETMC BAD STATUS:",
-                    response.status_code
-                )
+            if r.status_code != 200:
+                continue
 
-            else:
+            data = r.json()
 
-                data = response.json()
+            if isinstance(data, dict):
 
-                if data:
-                    print("✅ TSETMC DATA RECEIVED")
-                    return data
+                rows = data.get("marketwatch")
 
-                print("⚠️ TSETMC EMPTY DATA")
+                if isinstance(rows, list) and rows:
 
-        except requests.exceptions.ConnectTimeout:
-            print("⏱️ TSETMC CONNECT TIMEOUT")
+                    print(
+                        "✅ SOURCE 1 SUCCESS:",
+                        len(rows),
+                        "ROWS"
+                    )
 
-        except requests.exceptions.ReadTimeout:
-            print("⏱️ TSETMC READ TIMEOUT")
+                    return rows
+
+            print("⚠️ SOURCE 1 EMPTY")
 
         except requests.exceptions.Timeout:
-            print("⏱️ TSETMC TIMEOUT")
+
+            print("⏱️ SOURCE 1 TIMEOUT")
 
         except Exception as e:
-            print("❌ TSETMC ERROR:", str(e))
 
-        if attempt < RETRY_COUNT:
             print(
-                f"⏳ WAIT {RETRY_SLEEP}s..."
+                "❌ SOURCE 1 ERROR:",
+                str(e)
             )
-            time.sleep(RETRY_SLEEP)
+
+        time.sleep(1)
 
     return None
 
 
 # ============================================================
-# NORMALIZE
+# SOURCE 2
+# TSE OFFICIAL GATEWAY
 # ============================================================
 
-def normalize_market_data(data):
+def get_official_market_watch():
 
-    if data is None:
-        return []
+    url = (
+        "https://webgw.tse.ir/"
+        "InstrumentProvider/api/v1/"
+        "MarketWatch/MarketWatchCash/fa"
+    )
 
-    rows = []
+    print("🌐 SOURCE 2 OFFICIAL TSE")
 
     try:
 
-        if isinstance(data, list):
-            rows = data
-
-        elif isinstance(data, dict):
-
-            possible_keys = [
-                "marketWatch",
-                "marketwatch",
-                "data",
-                "rows",
-                "items",
-                "result",
-            ]
-
-            for key in possible_keys:
-
-                value = data.get(key)
-
-                if isinstance(value, list):
-                    rows = value
-                    break
-
-            if not rows:
-
-                for value in data.values():
-
-                    if isinstance(value, list):
-                        rows = value
-                        break
-
-        print(
-            "📊 MARKET WATCH ROWS:",
-            len(rows)
+        r = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
         )
 
-        return rows
+        print(
+            "📡 SOURCE 2 HTTP:",
+            r.status_code
+        )
+
+        if r.status_code != 200:
+            return None
+
+        data = r.json()
+
+        if isinstance(data, dict):
+
+            rows = data.get("Items")
+
+            if isinstance(rows, list) and rows:
+
+                print(
+                    "✅ SOURCE 2 SUCCESS:",
+                    len(rows),
+                    "ROWS"
+                )
+
+                return rows
+
+        print("⚠️ SOURCE 2 EMPTY")
+
+    except requests.exceptions.Timeout:
+
+        print("⏱️ SOURCE 2 TIMEOUT")
 
     except Exception as e:
 
         print(
-            "❌ NORMALIZE ERROR:",
+            "❌ SOURCE 2 ERROR:",
             str(e)
         )
 
-        return []
+    return None
 
 
 # ============================================================
-# BASIC MARKET SCAN
+# MARKET DATA
 # ============================================================
 
-def scan_market(rows):
+def get_market_data():
+
+    print("=" * 60)
+    print("🔎 MARKET DATA START")
+    print("=" * 60)
+
+    # SOURCE 1
+    rows = get_tsetmc_market_watch()
+
+    if rows:
+        return rows, "TSETMC-CDN"
+
+    # SOURCE 2
+    rows = get_official_market_watch()
+
+    if rows:
+        return rows, "TSE-OFFICIAL"
+
+    return None, None
+
+
+# ============================================================
+# SIMPLE SCAN
+# ============================================================
+
+def scan_market(rows, source):
 
     if not rows:
-
         return (
-            "❌ Market Watch خالی است.\n"
-            "هیچ نمادی برای بررسی دریافت نشد."
+            "❌ هیچ داده‌ای از بازار دریافت نشد."
         )
 
-    # فعلاً فقط دریافت صحیح بازار را تأیید می‌کنیم.
-    # معامله واقعی خاموش است.
-
     return (
-        "✅ MARKET WATCH دریافت شد.\n\n"
-        f"📊 تعداد داده‌های دریافتی: {len(rows)}\n\n"
-        "🔎 مرحله تحلیل بازار آماده است.\n"
+        "✅ MARKET WATCH دریافت شد\n\n"
+        f"📊 تعداد نمادها: {len(rows)}\n"
+        f"📡 منبع: {source}\n\n"
+        "🔎 داده بازار آماده تحلیل است.\n"
         "🔒 معامله واقعی: خاموش"
     )
 
@@ -250,9 +292,9 @@ def main():
 
     print("=" * 60)
     print(f"⚡ {VERSION}")
-    print("📊 بورس / فرابورس ایران")
-    print("🔒 REAL TRADING:", "ON" if REAL_TRADING else "OFF")
-    print("📡 TSETMC DATA")
+    print("📊 بورس و فرابورس ایران")
+    print("🔒 REAL TRADING: OFF")
+    print("📡 TSETMC / TSE")
     print("🕐", now_utc())
     print("=" * 60)
 
@@ -260,35 +302,31 @@ def main():
         "💓 ATI BOURSE ALIVE\n"
         f"⚡ {VERSION}\n"
         "📊 بورس و فرابورس ایران\n"
-        f"🔒 REAL TRADING: "
-        f"{'ON' if REAL_TRADING else 'OFF'}\n"
-        "📡 TSETMC DATA\n"
+        "🔒 REAL TRADING: OFF\n"
+        "📡 TSETMC / TSE\n"
         f"🕐 {now_utc()}\n\n"
-        "🔎 شروع اسکن بازار..."
+        "🔎 شروع دریافت اطلاعات بازار..."
     )
 
-    print("🔎 شروع اسکن بازار...")
+    rows, source = get_market_data()
 
-    data = get_market_watch()
-
-    if data is None:
+    if not rows:
 
         message = (
             "❌ ATI BOURSE ERROR\n\n"
-            "داده Market Watch از TSETMC دریافت نشد.\n"
-            "ربات هیچ معامله‌ای انجام نداد.\n\n"
-            f"⚡ {VERSION}\n"
+            "داده Market Watch از منابع بازار دریافت نشد.\n\n"
+            "🔁 SOURCE 1: TSETMC CDN\n"
+            "🔁 SOURCE 2: TSE OFFICIAL\n\n"
+            "🚫 ربات هیچ معامله‌ای انجام نداد.\n"
+            "🔒 REAL TRADING: OFF\n"
             f"🕐 {now_utc()}"
         )
 
         print(message)
         telegram_send(message)
-
         return
 
-    rows = normalize_market_data(data)
-
-    result = scan_market(rows)
+    result = scan_market(rows, source)
 
     print(result)
 
