@@ -1,14 +1,12 @@
 # ============================================================
-# ATI BOURSE BOT V1.1
+# ATI BOURSE BOT V1.2
 # بورس و فرابورس ایران
-# TSETMC MARKET WATCH - ROBUST VERSION
+# TSETMC ROBUST TIMEOUT VERSION
 # REAL TRADING: OFF
 # ============================================================
 
 import os
-import io
 import time
-import json
 import traceback
 from datetime import datetime, timezone
 
@@ -19,25 +17,58 @@ import requests
 # CONFIG
 # ============================================================
 
-VERSION = "ATI-BOURSE-V1.1"
+VERSION = "ATI-BOURSE-V1.2"
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+TELEGRAM_BOT_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN",
+    ""
+).strip()
+
+TELEGRAM_CHAT_ID = os.getenv(
+    "TELEGRAM_CHAT_ID",
+    ""
+).strip()
+
+# ------------------------------------------------------------
+# امنیت
+# ------------------------------------------------------------
 
 REAL_TRADING = False
 
-TIMEOUT = 25
-RETRIES = 3
+# ------------------------------------------------------------
+# TSETMC TIMEOUT CONTROL
+# ------------------------------------------------------------
+
+TOTAL_TSETMC_LIMIT = 55
+
+CONNECT_TIMEOUT = 6
+READ_TIMEOUT = 10
+
+RETRY_COUNT = 3
+
+RETRY_SLEEP = 2
+
+
+# ============================================================
+# HTTP HEADERS
+# ============================================================
 
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Linux; Android 10; K) "
         "AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/125.0 Mobile Safari/537.36"
+        "(KHTML, like Gecko) "
+        "Chrome/125.0 Mobile Safari/537.36"
     ),
-    "Accept": "application/json,text/plain,*/*",
-    "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
-    "Connection": "keep-alive",
+    "Accept": (
+        "application/json,"
+        "text/plain,"
+        "*/*"
+    ),
+    "Accept-Language": (
+        "fa-IR,fa;q=0.9,en;q=0.8"
+    ),
+    "Connection": "close",
 }
 
 
@@ -46,370 +77,433 @@ HEADERS = {
 # ============================================================
 
 def now_utc():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    return datetime.now(
+        timezone.utc
+    ).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
 
 
 # ============================================================
 # TELEGRAM
 # ============================================================
 
-def telegram_send(text):
+def telegram_send(message):
+
     if not TELEGRAM_BOT_TOKEN:
-        print("❌ TELEGRAM_BOT_TOKEN MISSING")
+
+        print(
+            "❌ TELEGRAM_BOT_TOKEN MISSING"
+        )
+
         return False
 
     if not TELEGRAM_CHAT_ID:
-        print("❌ TELEGRAM_CHAT_ID MISSING")
+
+        print(
+            "❌ TELEGRAM_CHAT_ID MISSING"
+        )
+
         return False
 
     url = (
-        f"https://api.telegram.org/bot"
-        f"{TELEGRAM_BOT_TOKEN}/sendMessage"
+        "https://api.telegram.org/bot"
+        + TELEGRAM_BOT_TOKEN
+        + "/sendMessage"
     )
 
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
+        "text": message,
     }
 
     try:
-        r = requests.post(
+
+        response = requests.post(
             url,
             json=payload,
-            timeout=20,
+            timeout=(5, 10),
         )
 
-        if r.ok:
-            print("✅ TELEGRAM SENT")
+        if response.status_code == 200:
+
+            print(
+                "✅ TELEGRAM SENT"
+            )
+
             return True
 
         print(
             "❌ TELEGRAM ERROR:",
-            r.status_code,
-            r.text[:500],
+            response.status_code,
+            response.text[:500],
         )
+
         return False
 
     except Exception as e:
-        print("❌ TELEGRAM EXCEPTION:", repr(e))
-        return False
 
-
-# ============================================================
-# HTTP GET WITH RETRY
-# ============================================================
-
-def http_get(url, timeout=TIMEOUT, retries=RETRIES):
-    last_error = None
-
-    for attempt in range(1, retries + 1):
-
-        try:
-            print(
-                f"🌐 HTTP TRY {attempt}/{retries}"
-            )
-            print(url)
-
-            response = requests.get(
-                url,
-                headers=HEADERS,
-                timeout=timeout,
-            )
-
-            print(
-                f"📡 HTTP STATUS: {response.status_code}"
-            )
-
-            if response.status_code == 200:
-                return response
-
-            last_error = (
-                f"HTTP {response.status_code}: "
-                f"{response.text[:300]}"
-            )
-
-        except Exception as e:
-            last_error = repr(e)
-
-            print(
-                f"⚠️ HTTP ERROR TRY {attempt}: "
-                f"{last_error}"
-            )
-
-        if attempt < retries:
-            sleep_time = attempt * 3
-
-            print(
-                f"⏳ RETRY AFTER {sleep_time}s"
-            )
-
-            time.sleep(sleep_time)
-
-    print("❌ HTTP FAILED")
-    print(last_error)
-
-    return None
-
-
-# ============================================================
-# TSETMC - METHOD 1
-# NEW JSON MARKET WATCH
-# ============================================================
-
-def get_marketwatch_new():
-
-    url = (
-        "https://cdn.tsetmc.com/api/"
-        "ClosingPrice/GetMarketWatch"
-        "?market=0"
-        "&industrialGroup="
-        "&paperTypes%5B0%5D=1"
-        "&paperTypes%5B1%5D=2"
-        "&paperTypes%5B2%5D=3"
-        "&paperTypes%5B3%5D=4"
-        "&paperTypes%5B4%5D=5"
-        "&paperTypes%5B5%5D=6"
-        "&paperTypes%5B6%5D=7"
-        "&paperTypes%5B7%5D=8"
-        "&paperTypes%5B8%5D=9"
-        "&showTraded=false"
-        "&withBestLimits=false"
-        "&hEven=0"
-        "&RefID=0"
-    )
-
-    response = http_get(url)
-
-    if response is None:
-        return None
-
-    try:
-        data = response.json()
-    except Exception as e:
         print(
-            "❌ TSETMC JSON ERROR:",
+            "❌ TELEGRAM EXCEPTION:",
             repr(e)
         )
-        return None
 
-    if not isinstance(data, dict):
-        print("❌ TSETMC RESPONSE IS NOT DICT")
-        return None
+        return False
 
-    rows = data.get("marketwatch")
 
-    if rows is None:
-        rows = data.get("marketWatch")
+# ============================================================
+# TSETMC URL
+# ============================================================
 
-    if not isinstance(rows, list):
-        print(
-            "❌ TSETMC MARKETWATCH KEY NOT FOUND"
-        )
-        return None
+TSETMC_MARKETWATCH_URL = (
+    "https://cdn.tsetmc.com/api/"
+    "ClosingPrice/GetMarketWatch"
+    "?market=0"
+    "&paperTypes%5B0%5D=1"
+    "&paperTypes%5B1%5D=2"
+    "&paperTypes%5B2%5D=3"
+    "&paperTypes%5B3%5D=4"
+    "&paperTypes%5B4%5D=5"
+    "&paperTypes%5B5%5D=6"
+    "&paperTypes%5B6%5D=7"
+    "&paperTypes%5B7%5D=8"
+    "&paperTypes%5B8%5D=9"
+    "&withBestLimits=false"
+    "&hEven=0"
+    "&RefID=0"
+)
+
+
+# ============================================================
+# TSETMC SINGLE REQUEST
+# ============================================================
+
+def tsetmc_request():
+
+    started = time.monotonic()
+
+    print("")
+    print(
+        "🌐 TSETMC REQUEST START"
+    )
 
     print(
-        f"📊 NEW API MARKET WATCH ROWS: {len(rows)}"
+        f"⏱️ TOTAL LIMIT: "
+        f"{TOTAL_TSETMC_LIMIT}s"
     )
 
-    if len(rows) == 0:
-        print(
-            "⚠️ NEW API RETURNED ZERO ROWS"
+    try:
+
+        response = requests.get(
+            TSETMC_MARKETWATCH_URL,
+            headers=HEADERS,
+            timeout=(
+                CONNECT_TIMEOUT,
+                READ_TIMEOUT,
+            ),
         )
+
+        elapsed = (
+            time.monotonic()
+            - started
+        )
+
+        print(
+            f"⏱️ TSETMC RESPONSE: "
+            f"{elapsed:.1f}s"
+        )
+
+        print(
+            f"📡 HTTP STATUS: "
+            f"{response.status_code}"
+        )
+
+        if response.status_code != 200:
+
+            print(
+                "❌ TSETMC HTTP ERROR"
+            )
+
+            print(
+                response.text[:500]
+            )
+
+            return None
+
+        if not response.content:
+
+            print(
+                "❌ TSETMC EMPTY RESPONSE"
+            )
+
+            return None
+
+        try:
+
+            data = response.json()
+
+        except Exception as e:
+
+            print(
+                "❌ TSETMC JSON ERROR:",
+                repr(e)
+            )
+
+            return None
+
+        if not isinstance(data, dict):
+
+            print(
+                "❌ TSETMC INVALID JSON"
+            )
+
+            return None
+
+        return data
+
+    except requests.exceptions.ConnectTimeout:
+
+        print(
+            "❌ TSETMC CONNECT TIMEOUT"
+        )
+
         return None
 
-    return rows
-
-
-# ============================================================
-# TSETMC - METHOD 2
-# OLD MARKET WATCH PLUS
-# ============================================================
-
-def get_marketwatch_old():
-
-    urls = [
-        "https://old.tsetmc.com/"
-        "tsev2/excel/MarketWatchPlus.aspx?d=0",
-
-        "https://old.tsetmc.com/"
-        "tsev2/excel/MarketWatchPlus.aspx"
-        "?d=0&format=0",
-    ]
-
-    for url in urls:
+    except requests.exceptions.ReadTimeout:
 
         print(
-            "🔁 TRY OLD TSETMC MARKET WATCH"
+            "❌ TSETMC READ TIMEOUT"
         )
 
-        response = http_get(
-            url,
-            timeout=30,
-            retries=2,
-        )
+        return None
 
-        if response is None:
-            continue
-
-        content = response.content
-
-        if not content:
-            print(
-                "⚠️ OLD TSETMC EMPTY RESPONSE"
-            )
-            continue
+    except requests.exceptions.Timeout:
 
         print(
-            f"📦 OLD TSETMC BYTES: "
-            f"{len(content)}"
+            "❌ TSETMC GENERAL TIMEOUT"
         )
 
-        return content
+        return None
 
-    return None
-
-
-# ============================================================
-# PARSE OLD EXCEL
-# ============================================================
-
-def parse_old_marketwatch(content):
-
-    try:
-        import pandas as pd
-    except ImportError:
-        print(
-            "❌ pandas is not installed"
-        )
-        return []
-
-    try:
-
-        df = pd.read_excel(
-            io.BytesIO(content),
-            header=None,
-        )
+    except requests.exceptions.ConnectionError as e:
 
         print(
-            f"📊 OLD EXCEL SHAPE: "
-            f"{df.shape}"
+            "❌ TSETMC CONNECTION ERROR:",
+            repr(e)
         )
 
-        if df.empty:
-            return []
-
-        # حذف ردیف‌های کاملاً خالی
-        df = df.dropna(
-            how="all"
-        )
-
-        if df.empty:
-            return []
-
-        rows = []
-
-        for _, row in df.iterrows():
-
-            values = []
-
-            for value in row.tolist():
-
-                if pd.isna(value):
-                    values.append("")
-                else:
-                    values.append(
-                        str(value).strip()
-                    )
-
-            rows.append(values)
-
-        print(
-            f"📊 OLD MARKET WATCH ROWS: "
-            f"{len(rows)}"
-        )
-
-        return rows
+        return None
 
     except Exception as e:
 
         print(
-            "❌ OLD EXCEL PARSE ERROR:",
+            "❌ TSETMC REQUEST ERROR:",
             repr(e)
         )
 
-        return []
+        return None
 
 
 # ============================================================
-# UNIFIED MARKET WATCH
+# EXTRACT MARKET ROWS
+# ============================================================
+
+def extract_market_rows(data):
+
+    if not isinstance(data, dict):
+
+        return []
+
+    possible_keys = [
+        "marketwatch",
+        "marketWatch",
+        "marketWatchData",
+        "data",
+        "rows",
+    ]
+
+    for key in possible_keys:
+
+        value = data.get(key)
+
+        if isinstance(value, list):
+
+            print(
+                f"✅ TSETMC KEY: {key}"
+            )
+
+            print(
+                f"📊 ROWS: {len(value)}"
+            )
+
+            return value
+
+        if isinstance(value, dict):
+
+            for nested_key in [
+                "marketwatch",
+                "marketWatch",
+                "rows",
+                "data",
+            ]:
+
+                nested = value.get(
+                    nested_key
+                )
+
+                if isinstance(
+                    nested,
+                    list
+                ):
+
+                    print(
+                        f"✅ TSETMC "
+                        f"NESTED KEY: "
+                        f"{key}/{nested_key}"
+                    )
+
+                    print(
+                        f"📊 ROWS: "
+                        f"{len(nested)}"
+                    )
+
+                    return nested
+
+    print(
+        "❌ MARKET WATCH ARRAY NOT FOUND"
+    )
+
+    print(
+        "🔎 JSON KEYS:",
+        list(data.keys())[:30]
+    )
+
+    return []
+
+
+# ============================================================
+# TSETMC RETRY ENGINE
 # ============================================================
 
 def get_market_watch():
 
-    print("")
-    print(
-        "🔎 TSETMC METHOD 1: NEW JSON"
-    )
+    started = time.monotonic()
 
-    rows = get_marketwatch_new()
+    last_error = ""
 
-    if rows:
-        print(
-            "✅ TSETMC NEW JSON SUCCESS"
+    for attempt in range(
+        1,
+        RETRY_COUNT + 1
+    ):
+
+        elapsed = (
+            time.monotonic()
+            - started
         )
 
-        return {
-            "type": "json",
-            "rows": rows,
-        }
-
-    print("")
-    print(
-        "⚠️ NEW JSON FAILED"
-    )
-
-    print(
-        "🔎 TSETMC METHOD 2: OLD EXCEL"
-    )
-
-    content = get_marketwatch_old()
-
-    if content:
-
-        rows = parse_old_marketwatch(
-            content
-        )
-
-        if rows:
+        if elapsed >= TOTAL_TSETMC_LIMIT:
 
             print(
-                "✅ TSETMC OLD EXCEL SUCCESS"
+                "⛔ TOTAL TSETMC TIME LIMIT REACHED"
             )
 
-            return {
-                "type": "excel",
-                "rows": rows,
-            }
+            break
+
+        print("")
+        print(
+            f"🔎 TSETMC TRY "
+            f"{attempt}/{RETRY_COUNT}"
+        )
+
+        data = tsetmc_request()
+
+        if data is not None:
+
+            rows = extract_market_rows(
+                data
+            )
+
+            if rows:
+
+                total_time = (
+                    time.monotonic()
+                    - started
+                )
+
+                print(
+                    "✅ TSETMC SUCCESS"
+                )
+
+                print(
+                    f"⏱️ TOTAL TIME: "
+                    f"{total_time:.1f}s"
+                )
+
+                return rows
+
+            last_error = (
+                "Market Watch array empty"
+            )
+
+        else:
+
+            last_error = (
+                "TSETMC request failed"
+            )
+
+        if attempt < RETRY_COUNT:
+
+            elapsed = (
+                time.monotonic()
+                - started
+            )
+
+            if (
+                elapsed + RETRY_SLEEP
+                >= TOTAL_TSETMC_LIMIT
+            ):
+
+                break
+
+            print(
+                f"⏳ WAIT "
+                f"{RETRY_SLEEP}s "
+                "BEFORE RETRY"
+            )
+
+            time.sleep(
+                RETRY_SLEEP
+            )
 
     print("")
     print(
-        "❌ ALL TSETMC METHODS FAILED"
+        "❌ TSETMC FAILED"
+    )
+
+    print(
+        f"❌ LAST ERROR: "
+        f"{last_error}"
     )
 
     return None
 
 
 # ============================================================
-# JSON NORMALIZER
+# NORMALIZE ROWS
 # ============================================================
 
-def normalize_json_rows(rows):
+def normalize_rows(rows):
 
-    result = []
+    normalized = []
 
     for item in rows:
 
-        if not isinstance(item, dict):
+        if not isinstance(
+            item,
+            dict
+        ):
+
             continue
 
         symbol = (
@@ -453,86 +547,145 @@ def normalize_json_rows(rows):
         )
 
         try:
+
             last_price = float(
-                str(last_price).replace(",", "")
+                str(
+                    last_price
+                ).replace(
+                    ",",
+                    ""
+                )
             )
+
         except Exception:
+
             last_price = 0
 
         try:
+
             close_price = float(
-                str(close_price).replace(",", "")
+                str(
+                    close_price
+                ).replace(
+                    ",",
+                    ""
+                )
             )
+
         except Exception:
+
             close_price = 0
 
         try:
+
             yesterday = float(
-                str(yesterday).replace(",", "")
+                str(
+                    yesterday
+                ).replace(
+                    ",",
+                    ""
+                )
             )
+
         except Exception:
+
             yesterday = 0
 
         try:
+
             volume = float(
-                str(volume).replace(",", "")
+                str(
+                    volume
+                ).replace(
+                    ",",
+                    ""
+                )
             )
+
         except Exception:
+
             volume = 0
 
         if not symbol:
+
             continue
 
-        result.append({
-            "symbol": str(symbol),
-            "name": str(name),
-            "last": last_price,
-            "close": close_price,
-            "yesterday": yesterday,
-            "volume": volume,
-        })
+        normalized.append(
+            {
+                "symbol": str(
+                    symbol
+                ),
+                "name": str(
+                    name
+                ),
+                "last": last_price,
+                "close": close_price,
+                "yesterday": yesterday,
+                "volume": volume,
+            }
+        )
 
-    return result
+    return normalized
 
 
 # ============================================================
-# SIMPLE MARKET FILTER
+# BASIC OPPORTUNITY SCAN
 # ============================================================
 
-def find_opportunities(rows):
+def scan_opportunities(rows):
 
     candidates = []
 
     for item in rows:
 
-        last_price = item["last"]
-        yesterday = item["yesterday"]
-        volume = item["volume"]
+        last_price = item[
+            "last"
+        ]
+
+        yesterday = item[
+            "yesterday"
+        ]
+
+        volume = item[
+            "volume"
+        ]
 
         if last_price <= 0:
+
             continue
 
         if yesterday <= 0:
+
             continue
 
         change_pct = (
-            (last_price - yesterday)
+            (
+                last_price
+                - yesterday
+            )
             / yesterday
         ) * 100
 
-        # فیلتر محافظه‌کارانه
-        if change_pct < 1.0:
-            continue
-
         if volume <= 0:
+
             continue
 
-        item["change_pct"] = change_pct
+        # فیلتر اولیه
+        if change_pct < 1.0:
 
-        candidates.append(item)
+            continue
+
+        item[
+            "change_pct"
+        ] = change_pct
+
+        candidates.append(
+            item
+        )
 
     candidates.sort(
-        key=lambda x: x["change_pct"],
+        key=lambda x:
+        x["change_pct"],
         reverse=True,
     )
 
@@ -540,27 +693,38 @@ def find_opportunities(rows):
 
 
 # ============================================================
-# TELEGRAM MARKET MESSAGE
+# TELEGRAM MARKET RESULT
 # ============================================================
 
-def send_market_message(
-    opportunities,
-    source,
+def send_market_result(
+    rows,
+    opportunities
 ):
 
-    if not opportunities:
+    if not rows:
 
-        text = (
-            "📊 ATI BOURSE\n\n"
-            "🔎 اسکن بازار انجام شد.\n"
-            f"📡 SOURCE: {source}\n\n"
-            "❌ فعلاً فرصت خرید مناسب "
-            "طبق فیلتر اولیه پیدا نشد.\n\n"
+        telegram_send(
+            "⚠️ ATI BOURSE\n\n"
+            "TSETMC پاسخ داد، "
+            "اما Market Watch خالی بود.\n\n"
             "🔒 REAL TRADING: OFF\n"
             f"🕐 {now_utc()}"
         )
 
-        telegram_send(text)
+        return
+
+    if not opportunities:
+
+        telegram_send(
+            "📊 ATI BOURSE\n\n"
+            "✅ Market Watch دریافت شد.\n"
+            f"📊 تعداد داده‌ها: "
+            f"{len(rows)}\n\n"
+            "🔎 در اسکن اولیه "
+            "فرصت مناسب پیدا نشد.\n\n"
+            "🔒 REAL TRADING: OFF\n"
+            f"🕐 {now_utc()}"
+        )
 
         return
 
@@ -568,45 +732,61 @@ def send_market_message(
         "📊 ATI BOURSE",
         "",
         "🔥 فرصت‌های اولیه بازار",
-        f"📡 SOURCE: {source}",
+        "",
+        f"📊 Market Watch: "
+        f"{len(rows)}",
         "",
     ]
 
     for index, item in enumerate(
         opportunities,
-        start=1,
+        1
     ):
 
-        symbol = item["symbol"]
-        name = item["name"]
-        last = item["last"]
-        change = item["change_pct"]
+        symbol = item[
+            "symbol"
+        ]
+
+        name = item[
+            "name"
+        ]
+
+        last = item[
+            "last"
+        ]
+
+        change = item[
+            "change_pct"
+        ]
 
         lines.append(
             f"{index}. {symbol}"
         )
 
         if name:
+
             lines.append(
-                f"   🏷 {name}"
+                f"🏷 {name}"
             )
 
         lines.append(
-            f"   💰 قیمت: {last:,.0f}"
+            f"💰 {last:,.0f}"
         )
 
         lines.append(
-            f"   📈 تغییر: +{change:.2f}%"
+            f"📈 +{change:.2f}%"
         )
 
         lines.append("")
 
-    lines.extend([
-        "⚠️ این‌ها فقط فرصت‌های اولیه‌اند.",
-        "❌ هنوز سیگنال قطعی خرید نیست.",
-        "🔒 REAL TRADING: OFF",
-        f"🕐 {now_utc()}",
-    ])
+    lines.extend(
+        [
+            "⚠️ این فقط اسکن اولیه است.",
+            "❌ سیگنال قطعی خرید نیست.",
+            "🔒 REAL TRADING: OFF",
+            f"🕐 {now_utc()}",
+        ]
+    )
 
     telegram_send(
         "\n".join(lines)
@@ -619,29 +799,35 @@ def send_market_message(
 
 def main():
 
+    print("")
     print(
-        "🚀 STARTING "
-        f"{VERSION}"
+        "=" * 60
     )
 
-    print("")
-    print("=" * 60)
     print(
         f"⚡ {VERSION}"
     )
+
     print(
         "📊 بورس / فرابورس ایران"
     )
+
     print(
         "🔒 REAL TRADING: OFF"
     )
+
     print(
         "📡 TSETMC DATA"
     )
+
     print(
         f"🕐 {now_utc()}"
     )
-    print("=" * 60)
+
+    print(
+        "=" * 60
+    )
+
     print("")
 
     # --------------------------------------------------------
@@ -659,12 +845,17 @@ def main():
     )
 
     # --------------------------------------------------------
-    # MARKET WATCH
+    # TSETMC
     # --------------------------------------------------------
 
-    market = get_market_watch()
+    print("")
+    print(
+        "🔎 START TSETMC SCAN"
+    )
 
-    if market is None:
+    rows = get_market_watch()
+
+    if rows is None:
 
         print("")
         print(
@@ -680,8 +871,9 @@ def main():
             "❌ ATI BOURSE ERROR\n\n"
             "داده Market Watch "
             "از TSETMC دریافت نشد.\n\n"
-            "🔁 ربات مسیرهای جایگزین "
-            "TSETMC را نیز امتحان کرد.\n"
+            "⏱️ ربات بعد از چند تلاش "
+            "به دلیل Timeout متوقف شد.\n"
+            "🚫 ربات گیر نکرد.\n"
             "🔒 REAL TRADING: OFF\n"
             f"🕐 {now_utc()}"
         )
@@ -692,83 +884,53 @@ def main():
     # NORMALIZE
     # --------------------------------------------------------
 
-    source = market["type"]
-    raw_rows = market["rows"]
-
-    if source == "json":
-
-        rows = normalize_json_rows(
-            raw_rows
-        )
-
-    else:
-
-        # فعلاً برای Excel فقط گزارش دریافت
-        # می‌دهیم؛ ساختار ستون‌های نسخه قدیمی
-        # ممکن است تغییر کند.
-        rows = []
-
-        print(
-            "⚠️ OLD EXCEL RECEIVED"
-        )
-
-        print(
-            "⚠️ Excel parser needs "
-            "column mapping for signals."
-        )
+    normalized = normalize_rows(
+        rows
+    )
 
     print("")
     print(
-        f"📡 MARKET SOURCE: {source}"
-    )
-
-    print(
-        f"📊 MARKET WATCH ROWS: "
-        f"{len(raw_rows)}"
+        f"📊 RAW ROWS: "
+        f"{len(rows)}"
     )
 
     print(
         f"📊 NORMALIZED ROWS: "
-        f"{len(rows)}"
+        f"{len(normalized)}"
     )
 
     # --------------------------------------------------------
-    # JSON SIGNAL ENGINE
+    # SCAN
     # --------------------------------------------------------
 
-    if rows:
-
-        opportunities = (
-            find_opportunities(rows)
+    opportunities = (
+        scan_opportunities(
+            normalized
         )
+    )
 
-        print(
-            f"🎯 OPPORTUNITIES: "
-            f"{len(opportunities)}"
-        )
+    print("")
+    print(
+        f"🎯 OPPORTUNITIES: "
+        f"{len(opportunities)}"
+    )
 
-        send_market_message(
-            opportunities,
-            source,
-        )
+    # --------------------------------------------------------
+    # TELEGRAM RESULT
+    # --------------------------------------------------------
 
-    else:
-
-        telegram_send(
-            "📊 ATI BOURSE\n\n"
-            "✅ اتصال به TSETMC برقرار شد.\n"
-            f"📡 SOURCE: {source}\n"
-            f"📊 ROWS: {len(raw_rows)}\n\n"
-            "⚠️ داده دریافت شد ولی "
-            "برای ساخت سیگنال هنوز "
-            "نیاز به نگاشت ستون‌ها داریم.\n\n"
-            "🔒 REAL TRADING: OFF\n"
-            f"🕐 {now_utc()}"
-        )
+    send_market_result(
+        normalized,
+        opportunities
+    )
 
     print("")
     print(
         "✅ ATI BOURSE RUN COMPLETED"
+    )
+
+    print(
+        f"🕐 {now_utc()}"
     )
 
 
@@ -786,7 +948,7 @@ if __name__ == "__main__":
 
         print("")
         print(
-            "🚨 FATAL ERROR"
+            "🚨 ATI BOURSE FATAL ERROR"
         )
 
         print(
