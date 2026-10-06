@@ -6,29 +6,49 @@ import requests
 
 
 # ============================================================
-# ATI BOURSE BOT V2.0
+# ATI BOURSE BOT V2.1
+# MARKET WATCH TIMEOUT + MULTI SOURCE + DIAGNOSTIC
 # بورس و فرابورس ایران
 # ============================================================
 
-VERSION = "ATI-BOURSE-V2.0-MARKETWATCH-FIX"
+VERSION = "ATI-BOURSE-V2.1-MARKETWATCH-DIAGNOSTIC"
 
-# فعلاً خاموش؛ بعد از تأیید داده بازار جداگانه فعال می‌کنیم
+# فعلاً معامله واقعی خاموش است
 REAL_TRADING = False
 
-TELEGRAM_TOKEN = os.getenv(
-    "TELEGRAM_BOT_TOKEN",
-    ""
-).strip()
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-TELEGRAM_CHAT_ID = os.getenv(
-    "TELEGRAM_CHAT_ID",
-    ""
-).strip()
+# ------------------------------------------------------------
+# TIMEOUT
+# ------------------------------------------------------------
 
-CONNECT_TIMEOUT = 8
-READ_TIMEOUT = 15
+CONNECT_TIMEOUT = 4
+READ_TIMEOUT = 6
 
-RETRIES = 2
+SOURCE_RETRIES = 1
+
+# ------------------------------------------------------------
+# HEADERS
+# ------------------------------------------------------------
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Linux; Android 10) "
+        "AppleWebKit/537.36 "
+        "(KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Mobile Safari/537.36"
+    ),
+    "Accept": (
+        "application/json,"
+        "application/vnd.ms-excel,"
+        "text/plain,"
+        "*/*"
+    ),
+    "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
+    "Referer": "https://www.tse.ir/",
+    "Connection": "close",
+}
 
 
 # ============================================================
@@ -36,9 +56,7 @@ RETRIES = 2
 # ============================================================
 
 def now_utc():
-    return datetime.now(
-        timezone.utc
-    ).strftime(
+    return datetime.now(timezone.utc).strftime(
         "%Y-%m-%d %H:%M:%S UTC"
     )
 
@@ -49,13 +67,8 @@ def now_utc():
 
 def telegram_send(text):
 
-    if (
-        not TELEGRAM_TOKEN
-        or not TELEGRAM_CHAT_ID
-    ):
-        print(
-            "❌ TELEGRAM SETTINGS MISSING"
-        )
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("❌ TELEGRAM SETTINGS MISSING")
         return False
 
     url = (
@@ -72,21 +85,17 @@ def telegram_send(text):
                 "chat_id": TELEGRAM_CHAT_ID,
                 "text": text,
             },
-            timeout=(5, 10),
+            timeout=(5, 8),
         )
 
         if r.ok:
-
-            print(
-                "✅ TELEGRAM SENT"
-            )
-
+            print("✅ TELEGRAM SENT")
             return True
 
         print(
             "❌ TELEGRAM ERROR:",
             r.status_code,
-            r.text
+            r.text[:500]
         )
 
         return False
@@ -102,162 +111,45 @@ def telegram_send(text):
 
 
 # ============================================================
-# HEADERS
+# HTTP DIAGNOSTIC
 # ============================================================
 
-HEADERS = {
+def diagnostic_response(name, response):
 
-    "User-Agent": (
-        "Mozilla/5.0 "
-        "(Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 "
-        "(KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
+    content_type = response.headers.get(
+        "content-type",
+        ""
+    )
 
-    "Accept": (
-        "application/json,"
-        "text/plain,"
-        "*/*"
-    ),
+    size = len(response.content)
 
-    "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
+    preview = ""
 
-    "Referer":
-        "https://www.tsetmc.com/",
+    try:
+        preview = (
+            response.text
+            .replace("\n", " ")
+            .replace("\r", " ")
+            [:150]
+        )
+    except Exception:
+        preview = "<NO PREVIEW>"
 
-    "Connection": "close",
-}
-
-
-# ============================================================
-# PARSE OLD TSETMC MARKET WATCH
-# ============================================================
-
-def parse_old_market_watch(
-    content
-):
-    """
-    TSETMC MarketWatchInit / MarketWatchPlus
-    پاسخ متنی چندبخشی دارد:
-
-    بخش‌ها با @ جدا می‌شوند.
-
-    بخش قیمت‌ها با ; جدا می‌شود.
-
-    هر ردیف با , جدا می‌شود.
-
-    ساختار رایج:
-    ins_code,isin,l18,l30,heven,
-    pf,pc,pl,tno,tvol,tval,
-    pmin,pmax,py,...
-    """
-
-    if not content:
-        return []
-
-    content = content.strip()
-
-    if not content:
-        return []
-
-    parts = content.split("@")
-
-    if len(parts) < 3:
-        return []
-
-    # بخش قیمت‌ها
-    price_part = parts[2]
-
-    if not price_part:
-        return []
-
-    rows = []
-
-    for raw_row in price_part.split(";"):
-
-        raw_row = raw_row.strip()
-
-        if not raw_row:
-            continue
-
-        cols = raw_row.split(",")
-
-        if len(cols) < 10:
-            continue
-
-        try:
-
-            # ساختار رایج 26 ستونه
-            item = {
-                "ins_code": cols[0],
-                "isin": cols[1]
-                    if len(cols) > 1
-                    else "",
-
-                "symbol": cols[2]
-                    if len(cols) > 2
-                    else "",
-
-                "name": cols[3]
-                    if len(cols) > 3
-                    else "",
-
-                "time": cols[4]
-                    if len(cols) > 4
-                    else "",
-
-                "first_price": cols[5]
-                    if len(cols) > 5
-                    else "",
-
-                "close_price": cols[6]
-                    if len(cols) > 6
-                    else "",
-
-                "last_price": cols[7]
-                    if len(cols) > 7
-                    else "",
-
-                "trade_count": cols[8]
-                    if len(cols) > 8
-                    else "",
-
-                "volume": cols[9]
-                    if len(cols) > 9
-                    else "",
-
-                "value": cols[10]
-                    if len(cols) > 10
-                    else "",
-
-                "min_price": cols[11]
-                    if len(cols) > 11
-                    else "",
-
-                "max_price": cols[12]
-                    if len(cols) > 12
-                    else "",
-
-                "yesterday_price": cols[13]
-                    if len(cols) > 13
-                    else "",
-            }
-
-            rows.append(item)
-
-        except Exception:
-            continue
-
-    return rows
+    print("=" * 60)
+    print(f"📡 {name}")
+    print("HTTP:", response.status_code)
+    print("TYPE:", content_type)
+    print("SIZE:", size)
+    print("PREVIEW:", preview)
+    print("=" * 60)
 
 
 # ============================================================
 # SOURCE 1
-# TSETMC NEW CDN API
+# CDN TSETMC
 # ============================================================
 
-def get_tsetmc_market_watch():
+def get_tsetmc_cdn():
 
     url = (
         "https://cdn.tsetmc.com/api/"
@@ -265,11 +157,8 @@ def get_tsetmc_market_watch():
     )
 
     params = {
-
         "market": 0,
-
         "industrialGroup": "",
-
         "paperTypes[0]": 1,
         "paperTypes[1]": 2,
         "paperTypes[2]": 3,
@@ -279,318 +168,405 @@ def get_tsetmc_market_watch():
         "paperTypes[6]": 7,
         "paperTypes[7]": 8,
         "paperTypes[8]": 9,
-
         "showTraded": "false",
         "withBestLimits": "false",
-
         "hEven": 0,
         "RefID": 0,
     }
 
-    for attempt in range(
-        1,
-        RETRIES + 1
-    ):
+    print("🌐 SOURCE 1: TSETMC CDN")
 
-        print(
-            f"🌐 SOURCE 1 TSETMC CDN "
-            f"{attempt}/{RETRIES}"
+    try:
+
+        r = requests.get(
+            url,
+            params=params,
+            headers=HEADERS,
+            timeout=(
+                CONNECT_TIMEOUT,
+                READ_TIMEOUT,
+            ),
         )
 
-        try:
+        diagnostic_response(
+            "SOURCE 1 TSETMC CDN",
+            r
+        )
 
-            r = requests.get(
-                url,
-                params=params,
-                headers=HEADERS,
-                timeout=(
-                    CONNECT_TIMEOUT,
-                    READ_TIMEOUT
-                ),
-            )
-
+        if r.status_code != 200:
             print(
-                "📡 SOURCE 1 HTTP:",
+                "❌ SOURCE 1 HTTP:",
                 r.status_code
             )
+            return None
 
-            if r.status_code != 200:
-
-                time.sleep(1)
-
-                continue
-
+        try:
             data = r.json()
-
-            if isinstance(
-                data,
-                dict
-            ):
-
-                rows = data.get(
-                    "marketwatch"
-                )
-
-                if (
-                    isinstance(
-                        rows,
-                        list
-                    )
-                    and rows
-                ):
-
-                    print(
-                        "✅ SOURCE 1 SUCCESS:",
-                        len(rows),
-                        "ROWS"
-                    )
-
-                    return rows
-
-            print(
-                "⚠️ SOURCE 1 EMPTY"
-            )
-
-        except requests.exceptions.Timeout:
-
-            print(
-                "⏱️ SOURCE 1 TIMEOUT"
-            )
-
         except Exception as e:
-
             print(
-                "❌ SOURCE 1 ERROR:",
+                "❌ SOURCE 1 JSON ERROR:",
                 str(e)
             )
+            return None
 
-        time.sleep(1)
+        if isinstance(data, dict):
+
+            rows = data.get("marketwatch")
+
+            if isinstance(rows, list) and rows:
+
+                print(
+                    "✅ SOURCE 1 SUCCESS:",
+                    len(rows),
+                    "ROWS"
+                )
+
+                return rows
+
+            print(
+                "⚠️ SOURCE 1 marketwatch EMPTY"
+            )
+
+        return None
+
+    except requests.exceptions.Timeout:
+
+        print(
+            "⏱️ SOURCE 1 TIMEOUT"
+        )
+
+    except Exception as e:
+
+        print(
+            "❌ SOURCE 1 ERROR:",
+            str(e)
+        )
+
+    return None
+
+
+# ============================================================
+# OLD MARKET WATCH PARSER
+# ============================================================
+
+def parse_old_market_watch(content):
+
+    if not content:
+        return None
+
+    content = content.strip()
+
+    print(
+        "📦 OLD RESPONSE LENGTH:",
+        len(content)
+    )
+
+    if "@" not in content:
+
+        print(
+            "⚠️ OLD RESPONSE HAS NO @ SEPARATOR"
+        )
+
+        print(
+            "PREVIEW:",
+            content[:300]
+        )
+
+        return None
+
+    parts = content.split("@")
+
+    print(
+        "🔢 OLD RESPONSE PARTS:",
+        len(parts)
+    )
+
+    if len(parts) < 5:
+
+        print(
+            "⚠️ OLD RESPONSE INVALID"
+        )
+
+        return None
+
+    # ساختار:
+    # 0 handle messages
+    # 1 market state
+    # 2 price rows
+    # 3 best limits
+    # 4 refid
+
+    price_rows = parts[2]
+
+    if not price_rows:
+
+        print(
+            "⚠️ OLD PRICE ROWS EMPTY"
+        )
+
+        return None
+
+    rows = []
+
+    raw_rows = price_rows.split(";")
+
+    for raw in raw_rows:
+
+        raw = raw.strip()
+
+        if not raw:
+            continue
+
+        cols = raw.split(",")
+
+        # طبق ساختار 26 ستونی TSETMC
+        if len(cols) < 20:
+            continue
+
+        symbol = (
+            cols[2].strip()
+            if len(cols) > 2
+            else ""
+        )
+
+        name = (
+            cols[3].strip()
+            if len(cols) > 3
+            else ""
+        )
+
+        if not symbol:
+            continue
+
+        rows.append(
+            {
+                "ins_code": cols[0],
+                "isin": cols[1],
+                "symbol": symbol,
+                "name": name,
+                "heven": cols[4] if len(cols) > 4 else "",
+                "pf": cols[5] if len(cols) > 5 else "",
+                "pc": cols[6] if len(cols) > 6 else "",
+                "pl": cols[7] if len(cols) > 7 else "",
+                "tno": cols[8] if len(cols) > 8 else "",
+                "tvol": cols[9] if len(cols) > 9 else "",
+                "tval": cols[10] if len(cols) > 10 else "",
+                "pmin": cols[11] if len(cols) > 11 else "",
+                "pmax": cols[12] if len(cols) > 12 else "",
+                "py": cols[13] if len(cols) > 13 else "",
+            }
+        )
+
+    if rows:
+
+        print(
+            "✅ OLD MARKET WATCH SUCCESS:",
+            len(rows),
+            "ROWS"
+        )
+
+        return rows
+
+    print(
+        "⚠️ OLD MARKET WATCH PARSED 0 ROWS"
+    )
 
     return None
 
 
 # ============================================================
 # SOURCE 2
-# TSETMC OLD MARKET WATCH INIT
+# OLD TSETMC MarketWatchInit
 # ============================================================
 
-def get_tsetmc_old_market_watch():
+def get_old_market_watch():
 
     urls = [
+        "https://old.tsetmc.com/"
+        "tsev2/data/MarketWatchInit.aspx?h=0&r=0",
 
-        (
-            "https://old.tsetmc.com/"
-            "tsev2/data/"
-            "MarketWatchInit.aspx"
-            "?h=0&r=0"
-        ),
+        "http://old.tsetmc.com/"
+        "tsev2/data/MarketWatchInit.aspx?h=0&r=0",
 
-        (
-            "http://old.tsetmc.com/"
-            "tsev2/data/"
-            "MarketWatchInit.aspx"
-            "?h=0&r=0"
-        ),
+        "https://www.tsetmc.com/"
+        "tsev2/data/MarketWatchInit.aspx?h=0&r=0",
 
-        (
-            "https://www.tsetmc.com/"
-            "tsev2/data/"
-            "MarketWatchInit.aspx"
-            "?h=0&r=0"
-        ),
-
-        (
-            "http://www.tsetmc.com/"
-            "tsev2/data/"
-            "MarketWatchInit.aspx"
-            "?h=0&r=0"
-        ),
+        "http://www.tsetmc.com/"
+        "tsev2/data/MarketWatchInit.aspx?h=0&r=0",
     ]
 
-    for url in urls:
+    print(
+        "🌐 SOURCE 2: OLD TSETMC"
+    )
+
+    for index, url in enumerate(urls, 1):
 
         print(
-            "🌐 SOURCE 2 OLD TSETMC"
+            f"🔁 OLD ENDPOINT {index}/{len(urls)}"
         )
 
-        print(
-            "🔗",
-            url
-        )
+        try:
 
-        for attempt in range(
-            1,
-            RETRIES + 1
-        ):
+            r = requests.get(
+                url,
+                headers=HEADERS,
+                timeout=(
+                    CONNECT_TIMEOUT,
+                    READ_TIMEOUT,
+                ),
+                allow_redirects=True,
+            )
 
-            try:
+            diagnostic_response(
+                f"OLD TSETMC {index}",
+                r
+            )
 
-                r = requests.get(
-                    url,
-                    headers=HEADERS,
-                    timeout=(
-                        CONNECT_TIMEOUT,
-                        READ_TIMEOUT
-                    ),
-                )
+            if r.status_code != 200:
+                continue
 
-                print(
-                    "📡 SOURCE 2 HTTP:",
-                    r.status_code
-                )
+            rows = parse_old_market_watch(
+                r.text
+            )
 
-                if r.status_code != 200:
+            if rows:
+                return rows
 
-                    continue
+        except requests.exceptions.Timeout:
 
-                content = r.text
+            print(
+                f"⏱️ OLD ENDPOINT {index} TIMEOUT"
+            )
 
-                rows = parse_old_market_watch(
-                    content
-                )
+        except Exception as e:
 
-                if rows:
-
-                    print(
-                        "✅ SOURCE 2 SUCCESS:",
-                        len(rows),
-                        "ROWS"
-                    )
-
-                    return rows
-
-                print(
-                    "⚠️ SOURCE 2 EMPTY"
-                )
-
-            except requests.exceptions.Timeout:
-
-                print(
-                    "⏱️ SOURCE 2 TIMEOUT"
-                )
-
-            except Exception as e:
-
-                print(
-                    "❌ SOURCE 2 ERROR:",
-                    str(e)
-                )
-
-            time.sleep(1)
+            print(
+                f"❌ OLD ENDPOINT {index} ERROR:",
+                str(e)
+            )
 
     return None
 
 
 # ============================================================
 # SOURCE 3
-# TSETMC MARKET WATCH PLUS
+# MARKETWATCHPLUS
 # ============================================================
 
 def get_market_watch_plus():
 
     urls = [
 
-        (
-            "https://old.tsetmc.com/"
-            "tsev2/data/"
-            "MarketWatchPlus.aspx"
-        ),
+        "https://old.tsetmc.com/"
+        "tsev2/excel/MarketWatchPlus.aspx?d=0",
 
-        (
-            "http://old.tsetmc.com/"
-            "tsev2/data/"
-            "MarketWatchPlus.aspx"
-        ),
+        "http://old.tsetmc.com/"
+        "tsev2/excel/MarketWatchPlus.aspx?d=0",
 
-        (
-            "https://www.tsetmc.com/"
-            "tsev2/data/"
-            "MarketWatchPlus.aspx"
-        ),
+        "https://www.tsetmc.com/"
+        "tsev2/excel/MarketWatchPlus.aspx?d=0",
 
-        (
-            "http://www.tsetmc.com/"
-            "tsev2/data/"
-            "MarketWatchPlus.aspx"
-        ),
+        "http://www.tsetmc.com/"
+        "tsev2/excel/MarketWatchPlus.aspx?d=0",
+
     ]
 
-    for url in urls:
+    print(
+        "🌐 SOURCE 3: MARKET WATCH PLUS"
+    )
+
+    for index, url in enumerate(urls, 1):
 
         print(
-            "🌐 SOURCE 3 MARKET WATCH PLUS"
+            f"🔁 PLUS ENDPOINT {index}/{len(urls)}"
         )
 
-        print(
-            "🔗",
-            url
-        )
+        try:
 
-        for attempt in range(
-            1,
-            RETRIES + 1
-        ):
+            r = requests.get(
+                url,
+                headers=HEADERS,
+                timeout=(
+                    CONNECT_TIMEOUT,
+                    READ_TIMEOUT,
+                ),
+                allow_redirects=True,
+            )
 
-            try:
+            diagnostic_response(
+                f"MARKET WATCH PLUS {index}",
+                r
+            )
 
-                r = requests.get(
-                    url,
-                    headers=HEADERS,
-                    timeout=(
-                        CONNECT_TIMEOUT,
-                        READ_TIMEOUT
-                    ),
-                )
+            if r.status_code != 200:
+                continue
 
-                print(
-                    "📡 SOURCE 3 HTTP:",
-                    r.status_code
-                )
+            # Excel response
+            content_type = (
+                r.headers.get(
+                    "content-type",
+                    ""
+                ).lower()
+            )
 
-                if r.status_code != 200:
-                    continue
+            # اگر Excel بود، فعلاً فقط
+            # دریافت موفق را گزارش می‌کنیم.
+            # برای تحلیل CSV/Excel در نسخه بعدی
+            # می‌توان openpyxl را اضافه کرد.
 
-                content = r.text
+            if (
+                "excel" in content_type
+                or "spreadsheet" in content_type
+                or "octet-stream" in content_type
+            ):
+
+                if len(r.content) > 1000:
+
+                    print(
+                        "✅ MARKET WATCH PLUS "
+                        "RESPONSE RECEIVED:",
+                        len(r.content),
+                        "BYTES"
+                    )
+
+                    return {
+                        "type": "binary",
+                        "content": r.content,
+                    }
+
+            # بعضی سرورها خروجی متنی می‌دهند
+            if "@" in r.text:
 
                 rows = parse_old_market_watch(
-                    content
+                    r.text
                 )
 
                 if rows:
-
-                    print(
-                        "✅ SOURCE 3 SUCCESS:",
-                        len(rows),
-                        "ROWS"
-                    )
-
                     return rows
 
-                print(
-                    "⚠️ SOURCE 3 EMPTY"
-                )
+            print(
+                "⚠️ PLUS RESPONSE NOT PARSED"
+            )
 
-            except requests.exceptions.Timeout:
+        except requests.exceptions.Timeout:
 
-                print(
-                    "⏱️ SOURCE 3 TIMEOUT"
-                )
+            print(
+                f"⏱️ PLUS ENDPOINT {index} TIMEOUT"
+            )
 
-            except Exception as e:
+        except Exception as e:
 
-                print(
-                    "❌ SOURCE 3 ERROR:",
-                    str(e)
-                )
-
-            time.sleep(1)
+            print(
+                f"❌ PLUS ENDPOINT {index} ERROR:",
+                str(e)
+            )
 
     return None
 
 
 # ============================================================
 # SOURCE 4
-# TSE OFFICIAL GATEWAY
+# OFFICIAL TSE GATEWAY
 # ============================================================
 
 def get_official_market_watch():
@@ -598,170 +574,202 @@ def get_official_market_watch():
     url = (
         "https://webgw.tse.ir/"
         "InstrumentProvider/api/v1/"
-        "MarketWatch/"
-        "MarketWatchCash/fa"
+        "MarketWatch/MarketWatchCash/fa"
     )
 
     print(
-        "🌐 SOURCE 4 OFFICIAL TSE"
+        "🌐 SOURCE 4: TSE OFFICIAL"
     )
 
-    for attempt in range(
-        1,
-        RETRIES + 1
-    ):
+    try:
+
+        r = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=(
+                CONNECT_TIMEOUT,
+                READ_TIMEOUT,
+            ),
+        )
+
+        diagnostic_response(
+            "SOURCE 4 TSE OFFICIAL",
+            r
+        )
+
+        if r.status_code != 200:
+            return None
 
         try:
-
-            r = requests.get(
-                url,
-                headers=HEADERS,
-                timeout=(
-                    CONNECT_TIMEOUT,
-                    READ_TIMEOUT
-                ),
-            )
-
-            print(
-                "📡 SOURCE 4 HTTP:",
-                r.status_code
-            )
-
-            if r.status_code != 200:
-
-                time.sleep(1)
-
-                continue
-
             data = r.json()
-
-            if isinstance(
-                data,
-                dict
-            ):
-
-                rows = data.get(
-                    "Items"
-                )
-
-                if (
-                    isinstance(
-                        rows,
-                        list
-                    )
-                    and rows
-                ):
-
-                    print(
-                        "✅ SOURCE 4 SUCCESS:",
-                        len(rows),
-                        "ROWS"
-                    )
-
-                    return rows
-
-            print(
-                "⚠️ SOURCE 4 EMPTY"
-            )
-
-        except requests.exceptions.Timeout:
-
-            print(
-                "⏱️ SOURCE 4 TIMEOUT"
-            )
-
         except Exception as e:
 
             print(
-                "❌ SOURCE 4 ERROR:",
+                "❌ OFFICIAL JSON ERROR:",
                 str(e)
             )
 
-        time.sleep(1)
+            return None
+
+        if isinstance(data, dict):
+
+            rows = data.get("Items")
+
+            if isinstance(rows, list) and rows:
+
+                print(
+                    "✅ SOURCE 4 SUCCESS:",
+                    len(rows),
+                    "ROWS"
+                )
+
+                return rows
+
+            # بعض پاسخ‌ها ممکن است
+            # با کلیدهای دیگری برگردند
+            for key, value in data.items():
+
+                if isinstance(value, list) and value:
+
+                    print(
+                        "✅ OFFICIAL LIST FOUND:",
+                        key,
+                        len(value)
+                    )
+
+                    return value
+
+        print(
+            "⚠️ OFFICIAL EMPTY"
+        )
+
+    except requests.exceptions.Timeout:
+
+        print(
+            "⏱️ SOURCE 4 TIMEOUT"
+        )
+
+    except Exception as e:
+
+        print(
+            "❌ SOURCE 4 ERROR:",
+            str(e)
+        )
 
     return None
 
 
 # ============================================================
-# MARKET DATA
+# MARKET DATA CONTROLLER
 # ============================================================
 
 def get_market_data():
 
     print("=" * 60)
-
-    print(
-        "🔎 MARKET DATA START"
-    )
-
+    print("🔎 MARKET DATA START")
     print("=" * 60)
 
     # --------------------------------------------------------
     # SOURCE 1
     # --------------------------------------------------------
 
-    rows = get_tsetmc_market_watch()
+    start = time.time()
+
+    rows = get_tsetmc_cdn()
+
+    elapsed = round(
+        time.time() - start,
+        2
+    )
+
+    print(
+        f"⏱️ SOURCE 1 TIME: {elapsed}s"
+    )
 
     if rows:
-
-        return (
-            rows,
-            "TSETMC-CDN"
-        )
+        return rows, "TSETMC-CDN"
 
     # --------------------------------------------------------
     # SOURCE 2
     # --------------------------------------------------------
 
-    rows = get_tsetmc_old_market_watch()
+    start = time.time()
+
+    rows = get_old_market_watch()
+
+    elapsed = round(
+        time.time() - start,
+        2
+    )
+
+    print(
+        f"⏱️ SOURCE 2 TIME: {elapsed}s"
+    )
 
     if rows:
-
-        return (
-            rows,
-            "TSETMC-OLD"
-        )
+        return rows, "TSETMC-OLD"
 
     # --------------------------------------------------------
     # SOURCE 3
     # --------------------------------------------------------
 
+    start = time.time()
+
     rows = get_market_watch_plus()
+
+    elapsed = round(
+        time.time() - start,
+        2
+    )
+
+    print(
+        f"⏱️ SOURCE 3 TIME: {elapsed}s"
+    )
 
     if rows:
 
-        return (
-            rows,
-            "TSETMC-MARKETWATCHPLUS"
-        )
+        # اگر پاسخ باینری Excel بود،
+        # فعلاً آن را به عنوان دریافت موفق
+        # نگه نمی‌داریم چون هنوز parse نشده.
+        if isinstance(rows, dict):
+
+            print(
+                "⚠️ SOURCE 3 RECEIVED EXCEL "
+                "BUT PARSER NOT ENABLED"
+            )
+
+        else:
+
+            return rows, "MARKET-WATCH-PLUS"
 
     # --------------------------------------------------------
     # SOURCE 4
     # --------------------------------------------------------
 
+    start = time.time()
+
     rows = get_official_market_watch()
 
-    if rows:
-
-        return (
-            rows,
-            "TSE-OFFICIAL"
-        )
-
-    return (
-        None,
-        None
+    elapsed = round(
+        time.time() - start,
+        2
     )
 
+    print(
+        f"⏱️ SOURCE 4 TIME: {elapsed}s"
+    )
+
+    if rows:
+        return rows, "TSE-OFFICIAL"
+
+    return None, None
+
 
 # ============================================================
-# SIMPLE MARKET SCAN
+# SCANNER
 # ============================================================
 
-def scan_market(
-    rows,
-    source
-):
+def scan_market(rows, source):
 
     if not rows:
 
@@ -774,6 +782,7 @@ def scan_market(
         f"📊 تعداد نمادها: {len(rows)}\n"
         f"📡 منبع: {source}\n\n"
         "🔎 داده بازار آماده تحلیل است.\n"
+        "📈 مرحله بعد: تحلیل نمادها\n"
         "🔒 معامله واقعی: خاموش"
     )
 
@@ -785,28 +794,22 @@ def scan_market(
 def main():
 
     print("=" * 60)
-
     print(
         f"⚡ {VERSION}"
     )
-
     print(
         "📊 بورس و فرابورس ایران"
     )
-
     print(
         "🔒 REAL TRADING: OFF"
     )
-
     print(
         "📡 TSETMC / TSE"
     )
-
     print(
         "🕐",
         now_utc()
     )
-
     print("=" * 60)
 
     telegram_send(
@@ -816,59 +819,75 @@ def main():
         "🔒 REAL TRADING: OFF\n"
         "📡 TSETMC / TSE\n"
         f"🕐 {now_utc()}\n\n"
-        "🔎 شروع دریافت اطلاعات بازار..."
+        "🔎 شروع دریافت اطلاعات بازار...\n"
+        "⏱️ هر منبع حداکثر چند ثانیه بررسی می‌شود."
     )
 
-    # ========================================================
-    # MARKET DATA
-    # ========================================================
+    # --------------------------------------------------------
+    # GET MARKET DATA
+    # --------------------------------------------------------
 
-    rows, source = get_market_data()
+    try:
 
-    # ========================================================
-    # FAILED
-    # ========================================================
+        rows, source = get_market_data()
 
-    if not rows:
+    except Exception as e:
 
-        message = (
-            "❌ ATI BOURSE ERROR\n\n"
-
-            "داده Market Watch از هیچ‌کدام "
-            "از منابع دریافت نشد.\n\n"
-
-            "🔁 SOURCE 1: TSETMC CDN\n"
-            "🔁 SOURCE 2: TSETMC OLD\n"
-            "🔁 SOURCE 3: MARKET WATCH PLUS\n"
-            "🔁 SOURCE 4: TSE OFFICIAL\n\n"
-
-            "🚫 ربات هیچ معامله‌ای انجام نداد.\n"
+        error_text = (
+            "🚨 ATI BOURSE FATAL ERROR\n\n"
+            f"⚡ {VERSION}\n\n"
+            "❌ خطای غیرمنتظره در دریافت بازار\n\n"
+            f"DETAIL:\n{str(e)[:1000]}\n\n"
             "🔒 REAL TRADING: OFF\n"
             f"🕐 {now_utc()}"
         )
 
-        print(
-            message
-        )
+        print(error_text)
 
-        telegram_send(
-            message
-        )
+        telegram_send(error_text)
 
         return
 
-    # ========================================================
-    # SUCCESS
-    # ========================================================
+    # --------------------------------------------------------
+    # NO DATA
+    # --------------------------------------------------------
+
+    if not rows:
+
+        message = (
+            "❌ ATI BOURSE MARKET DATA ERROR\n\n"
+            f"⚡ {VERSION}\n\n"
+            "هیچ‌کدام از منابع بازار داده قابل "
+            "استفاده برنگرداندند.\n\n"
+            "🔁 SOURCE 1: TSETMC CDN\n"
+            "🔁 SOURCE 2: OLD TSETMC\n"
+            "🔁 SOURCE 3: MARKET WATCH PLUS\n"
+            "🔁 SOURCE 4: TSE OFFICIAL\n\n"
+            "⏱️ Timeout فعال است؛ ربات نباید "
+            "روی دریافت بازار قفل شود.\n\n"
+            "🚫 هیچ معامله‌ای انجام نشد.\n"
+            "🔒 REAL TRADING: OFF\n"
+            f"🕐 {now_utc()}"
+        )
+
+        print(message)
+
+        telegram_send(message)
+
+        return
+
+    # --------------------------------------------------------
+    # SCAN
+    # --------------------------------------------------------
 
     result = scan_market(
         rows,
         source
     )
 
-    print(
-        result
-    )
+    print("=" * 60)
+    print(result)
+    print("=" * 60)
 
     telegram_send(
         "📊 ATI BOURSE RESULT\n\n"
@@ -887,26 +906,4 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
-
-    try:
-
-        main()
-
-    except Exception as e:
-
-        error_message = (
-            "🚨 ATI BOURSE CRITICAL ERROR\n\n"
-            f"❌ {e}\n\n"
-            f"⚡ {VERSION}\n"
-            f"🕐 {now_utc()}"
-        )
-
-        print(
-            error_message
-        )
-
-        telegram_send(
-            error_message
-        )
-
-        raise
+    main()
