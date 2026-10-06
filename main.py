@@ -6,19 +6,20 @@ import requests
 
 
 # ============================================================
-# ATI BOURSE BOT V2.2
-# TOP 5 STOCK SCANNER
+# ATI BOURSE BOT V2.3
+# TOP 5 STOCK SCANNER - SYNTAX FIX
 # ============================================================
 
-VERSION = "ATI-BOURSE-V2.2-TOP5"
+VERSION = "ATI-BOURSE-V2.3-TOP5-FIX"
 
+# فعلاً فقط تحلیل و ارسال تلگرام
 REAL_TRADING = False
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-CONNECT_TIMEOUT = 4
-READ_TIMEOUT = 6
+CONNECT_TIMEOUT = 5
+READ_TIMEOUT = 8
 
 HEADERS = {
     "User-Agent": (
@@ -29,7 +30,7 @@ HEADERS = {
     ),
     "Accept": "application/json,text/plain,*/*",
     "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
-    "Referer": "https://www.tse.ir/",
+    "Referer": "https://www.tsetmc.com/",
     "Connection": "close",
 }
 
@@ -50,8 +51,12 @@ def now_utc():
 
 def telegram_send(text):
 
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("❌ TELEGRAM SETTINGS MISSING")
+    if not TELEGRAM_TOKEN:
+        print("❌ TELEGRAM_TOKEN MISSING")
+        return False
+
+    if not TELEGRAM_CHAT_ID:
+        print("❌ TELEGRAM_CHAT_ID MISSING")
         return False
 
     url = (
@@ -61,31 +66,29 @@ def telegram_send(text):
     )
 
     try:
-
-        r = requests.post(
+        response = requests.post(
             url,
             json={
                 "chat_id": TELEGRAM_CHAT_ID,
                 "text": text,
             },
-            timeout=(5, 8),
+            timeout=(5, 10),
         )
 
-        if r.ok:
+        if response.ok:
             print("✅ TELEGRAM SENT")
             return True
 
         print(
             "❌ TELEGRAM ERROR:",
-            r.status_code,
-            r.text[:500]
+            response.status_code,
+            response.text[:500],
         )
 
-    except Exception as e:
-
+    except Exception as error:
         print(
-            "❌ TELEGRAM ERROR:",
-            str(e)
+            "❌ TELEGRAM EXCEPTION:",
+            str(error),
         )
 
     return False
@@ -101,27 +104,26 @@ def to_float(value):
         return None
 
     try:
-
         if isinstance(value, (int, float)):
             return float(value)
 
-        s = str(value).strip()
+        text = str(value).strip()
 
-        if not s:
+        if not text:
             return None
 
-        s = s.replace(",", "")
-        s = s.replace("٬", "")
-        s = s.replace("،", "")
+        text = text.replace(",", "")
+        text = text.replace("٬", "")
+        text = text.replace("،", "")
 
-        return float(s)
+        return float(text)
 
     except Exception:
         return None
 
 
 # ============================================================
-# GET VALUE FROM DICT
+# DICT VALUE
 # ============================================================
 
 def get_value(row, names):
@@ -131,12 +133,12 @@ def get_value(row, names):
 
     lowered = {}
 
-    for k, v in row.items():
-        lowered[str(k).lower()] = v
+    for key, value in row.items():
+        lowered[str(key).lower()] = value
 
     for name in names:
 
-        key = name.lower()
+        key = str(name).lower()
 
         if key in lowered:
             return lowered[key]
@@ -145,7 +147,7 @@ def get_value(row, names):
 
 
 # ============================================================
-# TSETMC CDN
+# SOURCE 1 - TSETMC CDN
 # ============================================================
 
 def get_tsetmc_cdn():
@@ -157,7 +159,6 @@ def get_tsetmc_cdn():
 
     params = {
         "market": 0,
-        "industrialGroup": "",
         "paperTypes[0]": 1,
         "paperTypes[1]": 2,
         "paperTypes[2]": 3,
@@ -167,7 +168,6 @@ def get_tsetmc_cdn():
         "paperTypes[6]": 7,
         "paperTypes[7]": 8,
         "paperTypes[8]": 9,
-        "showTraded": "false",
         "withBestLimits": "false",
         "hEven": 0,
         "RefID": 0,
@@ -177,7 +177,7 @@ def get_tsetmc_cdn():
 
     try:
 
-        r = requests.get(
+        response = requests.get(
             url,
             params=params,
             headers=HEADERS,
@@ -189,45 +189,46 @@ def get_tsetmc_cdn():
 
         print(
             "📡 SOURCE 1 HTTP:",
-            r.status_code,
+            response.status_code,
             "SIZE:",
-            len(r.content)
+            len(response.content),
         )
 
-        if r.status_code != 200:
+        if response.status_code != 200:
             return None
 
-        data = r.json()
+        data = response.json()
 
-        if isinstance(data, dict):
+        if not isinstance(data, dict):
+            return None
 
-            rows = data.get("marketwatch")
+        rows = data.get("marketwatch")
 
-            if isinstance(rows, list) and rows:
+        if isinstance(rows, list) and rows:
 
-                print(
-                    "✅ SOURCE 1 SUCCESS:",
-                    len(rows)
-                )
+            print(
+                "✅ SOURCE 1 SUCCESS:",
+                len(rows),
+            )
 
-                return rows
+            return rows
 
     except requests.exceptions.Timeout:
 
         print("⏱️ SOURCE 1 TIMEOUT")
 
-    except Exception as e:
+    except Exception as error:
 
         print(
             "❌ SOURCE 1 ERROR:",
-            str(e)
+            str(error),
         )
 
     return None
 
 
 # ============================================================
-# OLD TSETMC
+# SOURCE 2 - OLD TSETMC
 # ============================================================
 
 def parse_old_market_watch(content):
@@ -254,47 +255,42 @@ def parse_old_market_watch(content):
 
     for raw in price_rows.split(";"):
 
-        cols = raw.strip().split(",")
+        columns = raw.strip().split(",")
 
-        if len(cols) < 15:
+        if len(columns) < 15:
             continue
 
-        symbol = (
-            cols[2].strip()
-            if len(cols) > 2
-            else ""
-        )
+        symbol = columns[2].strip()
 
-        name = (
-            cols[3].strip()
-            if len(cols) > 3
-            else ""
-        )
+        name = columns[3].strip()
 
         if not symbol:
             continue
 
         result.append(
             {
-                "ins_code": cols[0],
-                "isin": cols[1],
+                "ins_code": columns[0],
+                "isin": columns[1],
                 "symbol": symbol,
                 "name": name,
-                "heven": cols[4],
-                "price": cols[5],
-                "close": cols[6],
-                "last": cols[7],
-                "trades": cols[8],
-                "volume": cols[9],
-                "value": cols[10],
-                "min": cols[11],
-                "max": cols[12],
-                "yesterday": cols[13],
-                "eps": cols[14],
+                "heven": columns[4],
+                "price": columns[5],
+                "close": columns[6],
+                "last": columns[7],
+                "trades": columns[8],
+                "volume": columns[9],
+                "value": columns[10],
+                "min": columns[11],
+                "max": columns[12],
+                "yesterday": columns[13],
+                "eps": columns[14],
             }
         )
 
-    return result if result else None
+    if result:
+        return result
+
+    return None
 
 
 def get_old_market_watch():
@@ -320,15 +316,15 @@ def get_old_market_watch():
 
     print("🌐 SOURCE 2: OLD TSETMC")
 
-    for i, url in enumerate(urls, 1):
+    for index, url in enumerate(urls, 1):
 
         try:
 
             print(
-                f"🔁 OLD {i}/{len(urls)}"
+                f"🔁 OLD SOURCE {index}/{len(urls)}"
             )
 
-            r = requests.get(
+            response = requests.get(
                 url,
                 headers=HEADERS,
                 timeout=(
@@ -340,23 +336,23 @@ def get_old_market_watch():
 
             print(
                 "HTTP:",
-                r.status_code,
+                response.status_code,
                 "SIZE:",
-                len(r.content)
+                len(response.content),
             )
 
-            if r.status_code != 200:
+            if response.status_code != 200:
                 continue
 
             rows = parse_old_market_watch(
-                r.text
+                response.text
             )
 
             if rows:
 
                 print(
                     "✅ OLD TSETMC SUCCESS:",
-                    len(rows)
+                    len(rows),
                 )
 
                 return rows
@@ -364,21 +360,21 @@ def get_old_market_watch():
         except requests.exceptions.Timeout:
 
             print(
-                f"⏱️ OLD {i} TIMEOUT"
+                f"⏱️ OLD SOURCE {index} TIMEOUT"
             )
 
-        except Exception as e:
+        except Exception as error:
 
             print(
-                f"❌ OLD {i} ERROR:",
-                str(e)
+                f"❌ OLD SOURCE {index} ERROR:",
+                str(error),
             )
 
     return None
 
 
 # ============================================================
-# NORMALIZE CDN ROW
+# NORMALIZE CDN
 # ============================================================
 
 def normalize_row(row):
@@ -392,9 +388,7 @@ def normalize_row(row):
             "symbol",
             "l18",
             "l18name",
-            "inscode",
-            "insCode",
-        ]
+        ],
     )
 
     name = get_value(
@@ -403,7 +397,7 @@ def normalize_row(row):
             "name",
             "l30",
             "l30name",
-        ]
+        ],
     )
 
     last = get_value(
@@ -413,7 +407,7 @@ def normalize_row(row):
             "pl",
             "lastPrice",
             "pLast",
-        ]
+        ],
     )
 
     close = get_value(
@@ -423,7 +417,7 @@ def normalize_row(row):
             "pc",
             "closingPrice",
             "pClosing",
-        ]
+        ],
     )
 
     yesterday = get_value(
@@ -432,7 +426,7 @@ def normalize_row(row):
             "yesterday",
             "py",
             "yesterdayPrice",
-        ]
+        ],
     )
 
     volume = get_value(
@@ -441,7 +435,7 @@ def normalize_row(row):
             "volume",
             "tvol",
             "totalVolume",
-        ]
+        ],
     )
 
     trades = get_value(
@@ -450,7 +444,7 @@ def normalize_row(row):
             "trades",
             "tno",
             "numberOfTrades",
-        ]
+        ],
     )
 
     value = get_value(
@@ -459,7 +453,7 @@ def normalize_row(row):
             "value",
             "tval",
             "tradeValue",
-        ]
+        ],
     )
 
     last = to_float(last)
@@ -475,11 +469,7 @@ def normalize_row(row):
     if last is None and close is None:
         return None
 
-    price = (
-        last
-        if last is not None and last > 0
-        else close
-    )
+    price = last if last and last > 0 else close
 
     if price is None or price <= 0:
         return None
@@ -487,13 +477,13 @@ def normalize_row(row):
     if yesterday is None or yesterday <= 0:
         yesterday = close
 
-    change = 0.0
+    if yesterday is None or yesterday <= 0:
+        return None
 
-    if yesterday and yesterday > 0:
-        change = (
-            (price - yesterday)
-            / yesterday
-        ) * 100
+    change = (
+        (price - yesterday)
+        / yesterday
+    ) * 100
 
     return {
         "symbol": str(symbol),
@@ -509,7 +499,7 @@ def normalize_row(row):
 
 
 # ============================================================
-# NORMALIZE OLD ROW
+# NORMALIZE OLD
 # ============================================================
 
 def normalize_old_row(row):
@@ -518,6 +508,7 @@ def normalize_old_row(row):
         return None
 
     symbol = row.get("symbol")
+
     name = row.get("name")
 
     price = to_float(
@@ -544,26 +535,26 @@ def normalize_old_row(row):
         row.get("value")
     )
 
-    if not symbol or price is None:
+    if not symbol:
         return None
 
-    if price <= 0:
+    if price is None or price <= 0:
         return None
 
-    if not yesterday or yesterday <= 0:
+    if yesterday is None or yesterday <= 0:
         yesterday = close or price
 
-    change = 0.0
+    if yesterday <= 0:
+        return None
 
-    if yesterday > 0:
-        change = (
-            (price - yesterday)
-            / yesterday
-        ) * 100
+    change = (
+        (price - yesterday)
+        / yesterday
+    ) * 100
 
     return {
-        "symbol": symbol,
-        "name": name or symbol,
+        "symbol": str(symbol),
+        "name": str(name or symbol),
         "price": price,
         "close": close or price,
         "yesterday": yesterday,
@@ -587,40 +578,46 @@ def score_stock(stock):
 
     score = 0
 
-    # حرکت مثبت
-    if change >= 1:
+    # رشد قیمت
+    if change >= 3:
+        score += 30
+    elif change >= 2:
         score += 25
+    elif change >= 1:
+        score += 20
     elif change >= 0.5:
-        score += 18
+        score += 12
     elif change > 0:
-        score += 10
+        score += 5
 
     # حجم
-    if volume > 1000000:
+    if volume >= 5_000_000:
+        score += 25
+    elif volume >= 1_000_000:
         score += 20
-    elif volume > 300000:
+    elif volume >= 300_000:
         score += 15
-    elif volume > 100000:
+    elif volume >= 100_000:
         score += 10
 
     # تعداد معاملات
-    if trades > 500:
+    if trades >= 1000:
         score += 20
-    elif trades > 200:
+    elif trades >= 500:
         score += 15
-    elif trades > 50:
+    elif trades >= 200:
         score += 10
+    elif trades >= 50:
+        score += 5
 
     # ارزش معاملات
-    if value > 10_000_000_000:
+    if value >= 50_000_000_000:
+        score += 25
+    elif value >= 10_000_000_000:
         score += 20
-    elif value > 2_000_000_000:
+    elif value >= 2_000_000_000:
         score += 15
-    elif value > 500_000_000:
-        score += 10
-
-    # جلوگیری از انتخاب رشدهای بسیار ضعیف
-    if change > 2:
+    elif value >= 500_000_000:
         score += 10
 
     stock["score"] = score
@@ -634,43 +631,38 @@ def score_stock(stock):
 
 def find_top5(rows, source):
 
-    normalized = []
+    stocks = []
 
     for row in rows:
 
         if source == "TSETMC-OLD":
-
-            item = normalize_old_row(row)
-
+            stock = normalize_old_row(row)
         else:
+            stock = normalize_row(row)
 
-            item = normalize_row(row)
-
-        if not item:
+        if not stock:
             continue
 
-        # فقط نمادهای مثبت
-        if item["change"] <= 0:
+        # فقط نماد مثبت
+        if stock["change"] <= 0:
             continue
 
-        item = score_stock(item)
+        stock = score_stock(stock)
 
-        normalized.append(item)
+        stocks.append(stock)
 
-    if not normalized:
-        return []
-
-    normalized.sort(
-        key=lambda x: (
-            x["score"],
-            x["change"],
-            x["value"],
-            x["volume"],
+    stocks.sort(
+        key=lambda item: (
+            item["score"],
+            item["change"],
+            item["value"],
+            item["volume"],
+            item["trades"],
         ),
         reverse=True,
     )
 
-    return normalized[:5]
+    return stocks[:5]
 
 
 # ============================================================
@@ -681,7 +673,6 @@ def make_levels(stock):
 
     price = stock["price"]
 
-    # پیشنهاد محافظه‌کارانه
     entry = price
 
     stop = price * 0.97
@@ -699,7 +690,7 @@ def make_levels(stock):
 
 
 # ============================================================
-# TELEGRAM TOP 5
+# SEND TOP 5
 # ============================================================
 
 def send_top5(top5, source):
@@ -709,48 +700,167 @@ def send_top5(top5, source):
         telegram_send(
             "⚠️ ATI BOURSE\n\n"
             "داده بازار دریافت شد اما "
-            "هیچ نماد مثبت و قابل امتیازدهی "
-            "پیدا نشد.\n\n"
+            "هیچ سهم مثبت قابل قبول پیدا نشد.\n\n"
             f"📡 SOURCE: {source}\n"
             "🔒 REAL TRADING: OFF"
         )
 
         return
 
-    header = (
+    telegram_send(
         "🏆 ATI BOURSE TOP 5\n"
         f"⚡ {VERSION}\n\n"
         f"📡 SOURCE: {source}\n"
         "🔒 REAL TRADING: OFF\n\n"
+        "۵ سهم برتر بازار:"
     )
 
-    telegram_send(header)
+    for index, stock in enumerate(top5, 1):
 
-    for i, stock in enumerate(top5, 1):
-
-        entry, stop, target1, target2 = (
-            make_levels(stock)
-        )
+        (
+            entry,
+            stop,
+            target1,
+            target2,
+        ) = make_levels(stock)
 
         message = (
-            f"#{i} 🟢 {stock['symbol']}\n"
+            f"#{index} 🟢 {stock['symbol']}\n"
             f"🏷 {stock['name']}\n\n"
             f"💰 قیمت: {stock['price']:,.0f}\n"
             f"📈 تغییر: {stock['change']:+.2f}%\n"
             f"⭐ امتیاز: {stock['score']}\n"
             f"📊 حجم: {stock['volume']:,.0f}\n"
-            f"🔄 معاملات: {stock['trades']:,.0f}\n\n"
+            f"🔄 معاملات: {stock['trades']:,.0f}\n"
+            f"💵 ارزش: {stock['value']:,.0f}\n\n"
             f"🟢 ورود پیشنهادی: {entry:,.0f}\n"
             f"🛑 حد ضرر: {stop:,.0f}\n"
             f"🎯 هدف ۱: {target1:,.0f}\n"
             f"🎯 هدف ۲: {target2:,.0f}\n\n"
-            "🧠 دلیل:\n"
-            "حرکت مثبت + حجم/ارزش معاملات + "
-            "تعداد معاملات مناسب.\n\n"
-            "⚠️ سیگنال تحلیلی است؛ "
-            "خرید خودکار انجام نمی‌شود."
+            "🧠 دلیل انتخاب:\n"
+            "رشد مثبت + حجم + تعداد معاملات "
+            "+ ارزش معاملات.\n\n"
+            "⚠️ این نسخه فقط سیگنال تحلیلی "
+            "ارسال می‌کند.\n"
+            "🚫 خرید خودکار خاموش است."
         )
 
         telegram_send(message)
 
-        time.sleep(
+        # فاصله بین پیام‌ها
+        time.sleep(1)
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    print("=" * 60)
+    print("ATI BOURSE BOT - START")
+    print(VERSION)
+    print("📊 بورس و فرابورس ایران")
+    print("🔒 REAL TRADING:", REAL_TRADING)
+    print(now_utc())
+    print("=" * 60)
+
+    telegram_send(
+        "💓 ATI BOURSE ALIVE\n"
+        f"⚡ {VERSION}\n"
+        "📊 بورس و فرابورس ایران\n"
+        "🔒 REAL TRADING: OFF\n"
+        "🎯 هدف: پیدا کردن ۵ سهم برتر\n"
+        f"🕐 {now_utc()}\n\n"
+        "🔎 شروع اسکن بازار..."
+    )
+
+    rows = None
+    source = None
+
+    # ========================================================
+    # SOURCE 1
+    # ========================================================
+
+    rows = get_tsetmc_cdn()
+
+    if rows:
+        source = "TSETMC-CDN"
+
+    # ========================================================
+    # SOURCE 2
+    # ========================================================
+
+    if not rows:
+
+        rows = get_old_market_watch()
+
+        if rows:
+            source = "TSETMC-OLD"
+
+    # ========================================================
+    # NO DATA
+    # ========================================================
+
+    if not rows:
+
+        telegram_send(
+            "❌ ATI BOURSE ERROR\n\n"
+            "هیچ داده‌ای از منابع بازار دریافت نشد.\n\n"
+            "🔁 SOURCE 1: TSETMC CDN\n"
+            "🔁 SOURCE 2: OLD TSETMC\n\n"
+            "🚫 هیچ سهمی انتخاب نشد.\n"
+            "🔒 REAL TRADING: OFF\n"
+            f"🕐 {now_utc()}"
+        )
+
+        print("❌ NO MARKET DATA")
+
+        return
+
+    # ========================================================
+    # DATA OK
+    # ========================================================
+
+    print(
+        "📊 MARKET ROWS:",
+        len(rows),
+    )
+
+    telegram_send(
+        "📊 MARKET DATA OK\n\n"
+        f"📈 تعداد داده‌ها: {len(rows)}\n"
+        f"📡 منبع: {source}\n\n"
+        "🧠 در حال امتیازدهی سهم‌ها..."
+    )
+
+    # ========================================================
+    # TOP 5
+    # ========================================================
+
+    top5 = find_top5(
+        rows,
+        source,
+    )
+
+    print(
+        "🏆 TOP 5:",
+        len(top5),
+    )
+
+    send_top5(
+        top5,
+        source,
+    )
+
+    print("=" * 60)
+    print("✅ ATI BOURSE SCAN COMPLETED")
+    print("=" * 60)
+
+
+# ============================================================
+# START
+# ============================================================
+
+if __name__ == "__main__":
+    main()
