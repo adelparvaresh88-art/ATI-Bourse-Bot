@@ -6,31 +6,19 @@ import requests
 
 
 # ============================================================
-# ATI BOURSE BOT V2.1
-# MARKET WATCH TIMEOUT + MULTI SOURCE + DIAGNOSTIC
-# بورس و فرابورس ایران
+# ATI BOURSE BOT V2.2
+# TOP 5 STOCK SCANNER
 # ============================================================
 
-VERSION = "ATI-BOURSE-V2.1-MARKETWATCH-DIAGNOSTIC"
+VERSION = "ATI-BOURSE-V2.2-TOP5"
 
-# فعلاً معامله واقعی خاموش است
 REAL_TRADING = False
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# ------------------------------------------------------------
-# TIMEOUT
-# ------------------------------------------------------------
-
 CONNECT_TIMEOUT = 4
 READ_TIMEOUT = 6
-
-SOURCE_RETRIES = 1
-
-# ------------------------------------------------------------
-# HEADERS
-# ------------------------------------------------------------
 
 HEADERS = {
     "User-Agent": (
@@ -39,12 +27,7 @@ HEADERS = {
         "(KHTML, like Gecko) "
         "Chrome/120.0.0.0 Mobile Safari/537.36"
     ),
-    "Accept": (
-        "application/json,"
-        "application/vnd.ms-excel,"
-        "text/plain,"
-        "*/*"
-    ),
+    "Accept": "application/json,text/plain,*/*",
     "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
     "Referer": "https://www.tse.ir/",
     "Connection": "close",
@@ -98,8 +81,6 @@ def telegram_send(text):
             r.text[:500]
         )
 
-        return False
-
     except Exception as e:
 
         print(
@@ -107,46 +88,64 @@ def telegram_send(text):
             str(e)
         )
 
-        return False
+    return False
 
 
 # ============================================================
-# HTTP DIAGNOSTIC
+# NUMBER
 # ============================================================
 
-def diagnostic_response(name, response):
+def to_float(value):
 
-    content_type = response.headers.get(
-        "content-type",
-        ""
-    )
-
-    size = len(response.content)
-
-    preview = ""
+    if value is None:
+        return None
 
     try:
-        preview = (
-            response.text
-            .replace("\n", " ")
-            .replace("\r", " ")
-            [:150]
-        )
-    except Exception:
-        preview = "<NO PREVIEW>"
 
-    print("=" * 60)
-    print(f"📡 {name}")
-    print("HTTP:", response.status_code)
-    print("TYPE:", content_type)
-    print("SIZE:", size)
-    print("PREVIEW:", preview)
-    print("=" * 60)
+        if isinstance(value, (int, float)):
+            return float(value)
+
+        s = str(value).strip()
+
+        if not s:
+            return None
+
+        s = s.replace(",", "")
+        s = s.replace("٬", "")
+        s = s.replace("،", "")
+
+        return float(s)
+
+    except Exception:
+        return None
 
 
 # ============================================================
-# SOURCE 1
-# CDN TSETMC
+# GET VALUE FROM DICT
+# ============================================================
+
+def get_value(row, names):
+
+    if not isinstance(row, dict):
+        return None
+
+    lowered = {}
+
+    for k, v in row.items():
+        lowered[str(k).lower()] = v
+
+    for name in names:
+
+        key = name.lower()
+
+        if key in lowered:
+            return lowered[key]
+
+    return None
+
+
+# ============================================================
+# TSETMC CDN
 # ============================================================
 
 def get_tsetmc_cdn():
@@ -188,26 +187,17 @@ def get_tsetmc_cdn():
             ),
         )
 
-        diagnostic_response(
-            "SOURCE 1 TSETMC CDN",
-            r
+        print(
+            "📡 SOURCE 1 HTTP:",
+            r.status_code,
+            "SIZE:",
+            len(r.content)
         )
 
         if r.status_code != 200:
-            print(
-                "❌ SOURCE 1 HTTP:",
-                r.status_code
-            )
             return None
 
-        try:
-            data = r.json()
-        except Exception as e:
-            print(
-                "❌ SOURCE 1 JSON ERROR:",
-                str(e)
-            )
-            return None
+        data = r.json()
 
         if isinstance(data, dict):
 
@@ -217,23 +207,14 @@ def get_tsetmc_cdn():
 
                 print(
                     "✅ SOURCE 1 SUCCESS:",
-                    len(rows),
-                    "ROWS"
+                    len(rows)
                 )
 
                 return rows
 
-            print(
-                "⚠️ SOURCE 1 marketwatch EMPTY"
-            )
-
-        return None
-
     except requests.exceptions.Timeout:
 
-        print(
-            "⏱️ SOURCE 1 TIMEOUT"
-        )
+        print("⏱️ SOURCE 1 TIMEOUT")
 
     except Exception as e:
 
@@ -246,7 +227,7 @@ def get_tsetmc_cdn():
 
 
 # ============================================================
-# OLD MARKET WATCH PARSER
+# OLD TSETMC
 # ============================================================
 
 def parse_old_market_watch(content):
@@ -256,71 +237,26 @@ def parse_old_market_watch(content):
 
     content = content.strip()
 
-    print(
-        "📦 OLD RESPONSE LENGTH:",
-        len(content)
-    )
-
     if "@" not in content:
-
-        print(
-            "⚠️ OLD RESPONSE HAS NO @ SEPARATOR"
-        )
-
-        print(
-            "PREVIEW:",
-            content[:300]
-        )
-
         return None
 
     parts = content.split("@")
 
-    print(
-        "🔢 OLD RESPONSE PARTS:",
-        len(parts)
-    )
-
-    if len(parts) < 5:
-
-        print(
-            "⚠️ OLD RESPONSE INVALID"
-        )
-
+    if len(parts) < 3:
         return None
-
-    # ساختار:
-    # 0 handle messages
-    # 1 market state
-    # 2 price rows
-    # 3 best limits
-    # 4 refid
 
     price_rows = parts[2]
 
     if not price_rows:
-
-        print(
-            "⚠️ OLD PRICE ROWS EMPTY"
-        )
-
         return None
 
-    rows = []
+    result = []
 
-    raw_rows = price_rows.split(";")
+    for raw in price_rows.split(";"):
 
-    for raw in raw_rows:
+        cols = raw.strip().split(",")
 
-        raw = raw.strip()
-
-        if not raw:
-            continue
-
-        cols = raw.split(",")
-
-        # طبق ساختار 26 ستونی TSETMC
-        if len(cols) < 20:
+        if len(cols) < 15:
             continue
 
         symbol = (
@@ -338,74 +274,59 @@ def parse_old_market_watch(content):
         if not symbol:
             continue
 
-        rows.append(
+        result.append(
             {
                 "ins_code": cols[0],
                 "isin": cols[1],
                 "symbol": symbol,
                 "name": name,
-                "heven": cols[4] if len(cols) > 4 else "",
-                "pf": cols[5] if len(cols) > 5 else "",
-                "pc": cols[6] if len(cols) > 6 else "",
-                "pl": cols[7] if len(cols) > 7 else "",
-                "tno": cols[8] if len(cols) > 8 else "",
-                "tvol": cols[9] if len(cols) > 9 else "",
-                "tval": cols[10] if len(cols) > 10 else "",
-                "pmin": cols[11] if len(cols) > 11 else "",
-                "pmax": cols[12] if len(cols) > 12 else "",
-                "py": cols[13] if len(cols) > 13 else "",
+                "heven": cols[4],
+                "price": cols[5],
+                "close": cols[6],
+                "last": cols[7],
+                "trades": cols[8],
+                "volume": cols[9],
+                "value": cols[10],
+                "min": cols[11],
+                "max": cols[12],
+                "yesterday": cols[13],
+                "eps": cols[14],
             }
         )
 
-    if rows:
+    return result if result else None
 
-        print(
-            "✅ OLD MARKET WATCH SUCCESS:",
-            len(rows),
-            "ROWS"
-        )
-
-        return rows
-
-    print(
-        "⚠️ OLD MARKET WATCH PARSED 0 ROWS"
-    )
-
-    return None
-
-
-# ============================================================
-# SOURCE 2
-# OLD TSETMC MarketWatchInit
-# ============================================================
 
 def get_old_market_watch():
 
     urls = [
-        "https://old.tsetmc.com/"
-        "tsev2/data/MarketWatchInit.aspx?h=0&r=0",
-
-        "http://old.tsetmc.com/"
-        "tsev2/data/MarketWatchInit.aspx?h=0&r=0",
-
-        "https://www.tsetmc.com/"
-        "tsev2/data/MarketWatchInit.aspx?h=0&r=0",
-
-        "http://www.tsetmc.com/"
-        "tsev2/data/MarketWatchInit.aspx?h=0&r=0",
+        (
+            "https://old.tsetmc.com/"
+            "tsev2/data/MarketWatchInit.aspx?h=0&r=0"
+        ),
+        (
+            "http://old.tsetmc.com/"
+            "tsev2/data/MarketWatchInit.aspx?h=0&r=0"
+        ),
+        (
+            "https://www.tsetmc.com/"
+            "tsev2/data/MarketWatchInit.aspx?h=0&r=0"
+        ),
+        (
+            "http://www.tsetmc.com/"
+            "tsev2/data/MarketWatchInit.aspx?h=0&r=0"
+        ),
     ]
 
-    print(
-        "🌐 SOURCE 2: OLD TSETMC"
-    )
+    print("🌐 SOURCE 2: OLD TSETMC")
 
-    for index, url in enumerate(urls, 1):
-
-        print(
-            f"🔁 OLD ENDPOINT {index}/{len(urls)}"
-        )
+    for i, url in enumerate(urls, 1):
 
         try:
+
+            print(
+                f"🔁 OLD {i}/{len(urls)}"
+            )
 
             r = requests.get(
                 url,
@@ -417,9 +338,11 @@ def get_old_market_watch():
                 allow_redirects=True,
             )
 
-            diagnostic_response(
-                f"OLD TSETMC {index}",
-                r
+            print(
+                "HTTP:",
+                r.status_code,
+                "SIZE:",
+                len(r.content)
             )
 
             if r.status_code != 200:
@@ -430,480 +353,404 @@ def get_old_market_watch():
             )
 
             if rows:
-                return rows
-
-        except requests.exceptions.Timeout:
-
-            print(
-                f"⏱️ OLD ENDPOINT {index} TIMEOUT"
-            )
-
-        except Exception as e:
-
-            print(
-                f"❌ OLD ENDPOINT {index} ERROR:",
-                str(e)
-            )
-
-    return None
-
-
-# ============================================================
-# SOURCE 3
-# MARKETWATCHPLUS
-# ============================================================
-
-def get_market_watch_plus():
-
-    urls = [
-
-        "https://old.tsetmc.com/"
-        "tsev2/excel/MarketWatchPlus.aspx?d=0",
-
-        "http://old.tsetmc.com/"
-        "tsev2/excel/MarketWatchPlus.aspx?d=0",
-
-        "https://www.tsetmc.com/"
-        "tsev2/excel/MarketWatchPlus.aspx?d=0",
-
-        "http://www.tsetmc.com/"
-        "tsev2/excel/MarketWatchPlus.aspx?d=0",
-
-    ]
-
-    print(
-        "🌐 SOURCE 3: MARKET WATCH PLUS"
-    )
-
-    for index, url in enumerate(urls, 1):
-
-        print(
-            f"🔁 PLUS ENDPOINT {index}/{len(urls)}"
-        )
-
-        try:
-
-            r = requests.get(
-                url,
-                headers=HEADERS,
-                timeout=(
-                    CONNECT_TIMEOUT,
-                    READ_TIMEOUT,
-                ),
-                allow_redirects=True,
-            )
-
-            diagnostic_response(
-                f"MARKET WATCH PLUS {index}",
-                r
-            )
-
-            if r.status_code != 200:
-                continue
-
-            # Excel response
-            content_type = (
-                r.headers.get(
-                    "content-type",
-                    ""
-                ).lower()
-            )
-
-            # اگر Excel بود، فعلاً فقط
-            # دریافت موفق را گزارش می‌کنیم.
-            # برای تحلیل CSV/Excel در نسخه بعدی
-            # می‌توان openpyxl را اضافه کرد.
-
-            if (
-                "excel" in content_type
-                or "spreadsheet" in content_type
-                or "octet-stream" in content_type
-            ):
-
-                if len(r.content) > 1000:
-
-                    print(
-                        "✅ MARKET WATCH PLUS "
-                        "RESPONSE RECEIVED:",
-                        len(r.content),
-                        "BYTES"
-                    )
-
-                    return {
-                        "type": "binary",
-                        "content": r.content,
-                    }
-
-            # بعضی سرورها خروجی متنی می‌دهند
-            if "@" in r.text:
-
-                rows = parse_old_market_watch(
-                    r.text
-                )
-
-                if rows:
-                    return rows
-
-            print(
-                "⚠️ PLUS RESPONSE NOT PARSED"
-            )
-
-        except requests.exceptions.Timeout:
-
-            print(
-                f"⏱️ PLUS ENDPOINT {index} TIMEOUT"
-            )
-
-        except Exception as e:
-
-            print(
-                f"❌ PLUS ENDPOINT {index} ERROR:",
-                str(e)
-            )
-
-    return None
-
-
-# ============================================================
-# SOURCE 4
-# OFFICIAL TSE GATEWAY
-# ============================================================
-
-def get_official_market_watch():
-
-    url = (
-        "https://webgw.tse.ir/"
-        "InstrumentProvider/api/v1/"
-        "MarketWatch/MarketWatchCash/fa"
-    )
-
-    print(
-        "🌐 SOURCE 4: TSE OFFICIAL"
-    )
-
-    try:
-
-        r = requests.get(
-            url,
-            headers=HEADERS,
-            timeout=(
-                CONNECT_TIMEOUT,
-                READ_TIMEOUT,
-            ),
-        )
-
-        diagnostic_response(
-            "SOURCE 4 TSE OFFICIAL",
-            r
-        )
-
-        if r.status_code != 200:
-            return None
-
-        try:
-            data = r.json()
-        except Exception as e:
-
-            print(
-                "❌ OFFICIAL JSON ERROR:",
-                str(e)
-            )
-
-            return None
-
-        if isinstance(data, dict):
-
-            rows = data.get("Items")
-
-            if isinstance(rows, list) and rows:
 
                 print(
-                    "✅ SOURCE 4 SUCCESS:",
-                    len(rows),
-                    "ROWS"
+                    "✅ OLD TSETMC SUCCESS:",
+                    len(rows)
                 )
 
                 return rows
 
-            # بعض پاسخ‌ها ممکن است
-            # با کلیدهای دیگری برگردند
-            for key, value in data.items():
+        except requests.exceptions.Timeout:
 
-                if isinstance(value, list) and value:
+            print(
+                f"⏱️ OLD {i} TIMEOUT"
+            )
 
-                    print(
-                        "✅ OFFICIAL LIST FOUND:",
-                        key,
-                        len(value)
-                    )
+        except Exception as e:
 
-                    return value
-
-        print(
-            "⚠️ OFFICIAL EMPTY"
-        )
-
-    except requests.exceptions.Timeout:
-
-        print(
-            "⏱️ SOURCE 4 TIMEOUT"
-        )
-
-    except Exception as e:
-
-        print(
-            "❌ SOURCE 4 ERROR:",
-            str(e)
-        )
+            print(
+                f"❌ OLD {i} ERROR:",
+                str(e)
+            )
 
     return None
 
 
 # ============================================================
-# MARKET DATA CONTROLLER
+# NORMALIZE CDN ROW
 # ============================================================
 
-def get_market_data():
+def normalize_row(row):
 
-    print("=" * 60)
-    print("🔎 MARKET DATA START")
-    print("=" * 60)
+    if not isinstance(row, dict):
+        return None
 
-    # --------------------------------------------------------
-    # SOURCE 1
-    # --------------------------------------------------------
-
-    start = time.time()
-
-    rows = get_tsetmc_cdn()
-
-    elapsed = round(
-        time.time() - start,
-        2
+    symbol = get_value(
+        row,
+        [
+            "symbol",
+            "l18",
+            "l18name",
+            "inscode",
+            "insCode",
+        ]
     )
 
-    print(
-        f"⏱️ SOURCE 1 TIME: {elapsed}s"
+    name = get_value(
+        row,
+        [
+            "name",
+            "l30",
+            "l30name",
+        ]
     )
 
-    if rows:
-        return rows, "TSETMC-CDN"
-
-    # --------------------------------------------------------
-    # SOURCE 2
-    # --------------------------------------------------------
-
-    start = time.time()
-
-    rows = get_old_market_watch()
-
-    elapsed = round(
-        time.time() - start,
-        2
+    last = get_value(
+        row,
+        [
+            "last",
+            "pl",
+            "lastPrice",
+            "pLast",
+        ]
     )
 
-    print(
-        f"⏱️ SOURCE 2 TIME: {elapsed}s"
+    close = get_value(
+        row,
+        [
+            "close",
+            "pc",
+            "closingPrice",
+            "pClosing",
+        ]
     )
 
-    if rows:
-        return rows, "TSETMC-OLD"
-
-    # --------------------------------------------------------
-    # SOURCE 3
-    # --------------------------------------------------------
-
-    start = time.time()
-
-    rows = get_market_watch_plus()
-
-    elapsed = round(
-        time.time() - start,
-        2
+    yesterday = get_value(
+        row,
+        [
+            "yesterday",
+            "py",
+            "yesterdayPrice",
+        ]
     )
 
-    print(
-        f"⏱️ SOURCE 3 TIME: {elapsed}s"
+    volume = get_value(
+        row,
+        [
+            "volume",
+            "tvol",
+            "totalVolume",
+        ]
     )
 
-    if rows:
+    trades = get_value(
+        row,
+        [
+            "trades",
+            "tno",
+            "numberOfTrades",
+        ]
+    )
 
-        # اگر پاسخ باینری Excel بود،
-        # فعلاً آن را به عنوان دریافت موفق
-        # نگه نمی‌داریم چون هنوز parse نشده.
-        if isinstance(rows, dict):
+    value = get_value(
+        row,
+        [
+            "value",
+            "tval",
+            "tradeValue",
+        ]
+    )
 
-            print(
-                "⚠️ SOURCE 3 RECEIVED EXCEL "
-                "BUT PARSER NOT ENABLED"
-            )
+    last = to_float(last)
+    close = to_float(close)
+    yesterday = to_float(yesterday)
+    volume = to_float(volume)
+    trades = to_float(trades)
+    value = to_float(value)
+
+    if not symbol:
+        return None
+
+    if last is None and close is None:
+        return None
+
+    price = (
+        last
+        if last is not None and last > 0
+        else close
+    )
+
+    if price is None or price <= 0:
+        return None
+
+    if yesterday is None or yesterday <= 0:
+        yesterday = close
+
+    change = 0.0
+
+    if yesterday and yesterday > 0:
+        change = (
+            (price - yesterday)
+            / yesterday
+        ) * 100
+
+    return {
+        "symbol": str(symbol),
+        "name": str(name or symbol),
+        "price": price,
+        "close": close or price,
+        "yesterday": yesterday,
+        "change": change,
+        "volume": volume or 0,
+        "trades": trades or 0,
+        "value": value or 0,
+    }
+
+
+# ============================================================
+# NORMALIZE OLD ROW
+# ============================================================
+
+def normalize_old_row(row):
+
+    if not isinstance(row, dict):
+        return None
+
+    symbol = row.get("symbol")
+    name = row.get("name")
+
+    price = to_float(
+        row.get("last")
+    )
+
+    close = to_float(
+        row.get("close")
+    )
+
+    yesterday = to_float(
+        row.get("yesterday")
+    )
+
+    volume = to_float(
+        row.get("volume")
+    )
+
+    trades = to_float(
+        row.get("trades")
+    )
+
+    value = to_float(
+        row.get("value")
+    )
+
+    if not symbol or price is None:
+        return None
+
+    if price <= 0:
+        return None
+
+    if not yesterday or yesterday <= 0:
+        yesterday = close or price
+
+    change = 0.0
+
+    if yesterday > 0:
+        change = (
+            (price - yesterday)
+            / yesterday
+        ) * 100
+
+    return {
+        "symbol": symbol,
+        "name": name or symbol,
+        "price": price,
+        "close": close or price,
+        "yesterday": yesterday,
+        "change": change,
+        "volume": volume or 0,
+        "trades": trades or 0,
+        "value": value or 0,
+    }
+
+
+# ============================================================
+# SCORE
+# ============================================================
+
+def score_stock(stock):
+
+    change = stock["change"]
+    volume = stock["volume"]
+    trades = stock["trades"]
+    value = stock["value"]
+
+    score = 0
+
+    # حرکت مثبت
+    if change >= 1:
+        score += 25
+    elif change >= 0.5:
+        score += 18
+    elif change > 0:
+        score += 10
+
+    # حجم
+    if volume > 1000000:
+        score += 20
+    elif volume > 300000:
+        score += 15
+    elif volume > 100000:
+        score += 10
+
+    # تعداد معاملات
+    if trades > 500:
+        score += 20
+    elif trades > 200:
+        score += 15
+    elif trades > 50:
+        score += 10
+
+    # ارزش معاملات
+    if value > 10_000_000_000:
+        score += 20
+    elif value > 2_000_000_000:
+        score += 15
+    elif value > 500_000_000:
+        score += 10
+
+    # جلوگیری از انتخاب رشدهای بسیار ضعیف
+    if change > 2:
+        score += 10
+
+    stock["score"] = score
+
+    return stock
+
+
+# ============================================================
+# FIND TOP 5
+# ============================================================
+
+def find_top5(rows, source):
+
+    normalized = []
+
+    for row in rows:
+
+        if source == "TSETMC-OLD":
+
+            item = normalize_old_row(row)
 
         else:
 
-            return rows, "MARKET-WATCH-PLUS"
+            item = normalize_row(row)
 
-    # --------------------------------------------------------
-    # SOURCE 4
-    # --------------------------------------------------------
+        if not item:
+            continue
 
-    start = time.time()
+        # فقط نمادهای مثبت
+        if item["change"] <= 0:
+            continue
 
-    rows = get_official_market_watch()
+        item = score_stock(item)
 
-    elapsed = round(
-        time.time() - start,
-        2
+        normalized.append(item)
+
+    if not normalized:
+        return []
+
+    normalized.sort(
+        key=lambda x: (
+            x["score"],
+            x["change"],
+            x["value"],
+            x["volume"],
+        ),
+        reverse=True,
     )
 
-    print(
-        f"⏱️ SOURCE 4 TIME: {elapsed}s"
-    )
-
-    if rows:
-        return rows, "TSE-OFFICIAL"
-
-    return None, None
+    return normalized[:5]
 
 
 # ============================================================
-# SCANNER
+# PRICE LEVELS
 # ============================================================
 
-def scan_market(rows, source):
+def make_levels(stock):
 
-    if not rows:
+    price = stock["price"]
 
-        return (
-            "❌ هیچ داده‌ای از بازار دریافت نشد."
-        )
+    # پیشنهاد محافظه‌کارانه
+    entry = price
+
+    stop = price * 0.97
+
+    target1 = price * 1.05
+
+    target2 = price * 1.08
 
     return (
-        "✅ MARKET WATCH دریافت شد\n\n"
-        f"📊 تعداد نمادها: {len(rows)}\n"
-        f"📡 منبع: {source}\n\n"
-        "🔎 داده بازار آماده تحلیل است.\n"
-        "📈 مرحله بعد: تحلیل نمادها\n"
-        "🔒 معامله واقعی: خاموش"
+        entry,
+        stop,
+        target1,
+        target2,
     )
 
 
 # ============================================================
-# MAIN
+# TELEGRAM TOP 5
 # ============================================================
 
-def main():
+def send_top5(top5, source):
 
-    print("=" * 60)
-    print(
-        f"⚡ {VERSION}"
-    )
-    print(
-        "📊 بورس و فرابورس ایران"
-    )
-    print(
-        "🔒 REAL TRADING: OFF"
-    )
-    print(
-        "📡 TSETMC / TSE"
-    )
-    print(
-        "🕐",
-        now_utc()
-    )
-    print("=" * 60)
+    if not top5:
 
-    telegram_send(
-        "💓 ATI BOURSE ALIVE\n"
-        f"⚡ {VERSION}\n"
-        "📊 بورس و فرابورس ایران\n"
-        "🔒 REAL TRADING: OFF\n"
-        "📡 TSETMC / TSE\n"
-        f"🕐 {now_utc()}\n\n"
-        "🔎 شروع دریافت اطلاعات بازار...\n"
-        "⏱️ هر منبع حداکثر چند ثانیه بررسی می‌شود."
-    )
-
-    # --------------------------------------------------------
-    # GET MARKET DATA
-    # --------------------------------------------------------
-
-    try:
-
-        rows, source = get_market_data()
-
-    except Exception as e:
-
-        error_text = (
-            "🚨 ATI BOURSE FATAL ERROR\n\n"
-            f"⚡ {VERSION}\n\n"
-            "❌ خطای غیرمنتظره در دریافت بازار\n\n"
-            f"DETAIL:\n{str(e)[:1000]}\n\n"
-            "🔒 REAL TRADING: OFF\n"
-            f"🕐 {now_utc()}"
+        telegram_send(
+            "⚠️ ATI BOURSE\n\n"
+            "داده بازار دریافت شد اما "
+            "هیچ نماد مثبت و قابل امتیازدهی "
+            "پیدا نشد.\n\n"
+            f"📡 SOURCE: {source}\n"
+            "🔒 REAL TRADING: OFF"
         )
-
-        print(error_text)
-
-        telegram_send(error_text)
 
         return
 
-    # --------------------------------------------------------
-    # NO DATA
-    # --------------------------------------------------------
+    header = (
+        "🏆 ATI BOURSE TOP 5\n"
+        f"⚡ {VERSION}\n\n"
+        f"📡 SOURCE: {source}\n"
+        "🔒 REAL TRADING: OFF\n\n"
+    )
 
-    if not rows:
+    telegram_send(header)
 
-        message = (
-            "❌ ATI BOURSE MARKET DATA ERROR\n\n"
-            f"⚡ {VERSION}\n\n"
-            "هیچ‌کدام از منابع بازار داده قابل "
-            "استفاده برنگرداندند.\n\n"
-            "🔁 SOURCE 1: TSETMC CDN\n"
-            "🔁 SOURCE 2: OLD TSETMC\n"
-            "🔁 SOURCE 3: MARKET WATCH PLUS\n"
-            "🔁 SOURCE 4: TSE OFFICIAL\n\n"
-            "⏱️ Timeout فعال است؛ ربات نباید "
-            "روی دریافت بازار قفل شود.\n\n"
-            "🚫 هیچ معامله‌ای انجام نشد.\n"
-            "🔒 REAL TRADING: OFF\n"
-            f"🕐 {now_utc()}"
+    for i, stock in enumerate(top5, 1):
+
+        entry, stop, target1, target2 = (
+            make_levels(stock)
         )
 
-        print(message)
+        message = (
+            f"#{i} 🟢 {stock['symbol']}\n"
+            f"🏷 {stock['name']}\n\n"
+            f"💰 قیمت: {stock['price']:,.0f}\n"
+            f"📈 تغییر: {stock['change']:+.2f}%\n"
+            f"⭐ امتیاز: {stock['score']}\n"
+            f"📊 حجم: {stock['volume']:,.0f}\n"
+            f"🔄 معاملات: {stock['trades']:,.0f}\n\n"
+            f"🟢 ورود پیشنهادی: {entry:,.0f}\n"
+            f"🛑 حد ضرر: {stop:,.0f}\n"
+            f"🎯 هدف ۱: {target1:,.0f}\n"
+            f"🎯 هدف ۲: {target2:,.0f}\n\n"
+            "🧠 دلیل:\n"
+            "حرکت مثبت + حجم/ارزش معاملات + "
+            "تعداد معاملات مناسب.\n\n"
+            "⚠️ سیگنال تحلیلی است؛ "
+            "خرید خودکار انجام نمی‌شود."
+        )
 
         telegram_send(message)
 
-        return
-
-    # --------------------------------------------------------
-    # SCAN
-    # --------------------------------------------------------
-
-    result = scan_market(
-        rows,
-        source
-    )
-
-    print("=" * 60)
-    print(result)
-    print("=" * 60)
-
-    telegram_send(
-        "📊 ATI BOURSE RESULT\n\n"
-        f"{result}\n\n"
-        f"⚡ {VERSION}\n"
-        f"🕐 {now_utc()}"
-    )
-
-    print(
-        "✅ ATI BOURSE RUN COMPLETED"
-    )
-
-
-# ============================================================
-# START
-# ============================================================
-
-if __name__ == "__main__":
-    main()
+        time.sleep(
