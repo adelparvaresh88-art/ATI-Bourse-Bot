@@ -6,11 +6,11 @@ import requests
 
 
 # ============================================================
-# ATI BOURSE BOT V2.3
-# TOP 5 STOCK SCANNER - SYNTAX FIX
+# ATI BOURSE BOT V2.4
+# TOP 5 STOCK SCANNER - MULTI SOURCE FAILOVER
 # ============================================================
 
-VERSION = "ATI-BOURSE-V2.3-TOP5-FIX"
+VERSION = "ATI-BOURSE-V2.4-FAILOVER-TOP5"
 
 # فعلاً فقط تحلیل و ارسال تلگرام
 REAL_TRADING = False
@@ -66,6 +66,7 @@ def telegram_send(text):
     )
 
     try:
+
         response = requests.post(
             url,
             json={
@@ -86,6 +87,7 @@ def telegram_send(text):
         )
 
     except Exception as error:
+
         print(
             "❌ TELEGRAM EXCEPTION:",
             str(error),
@@ -104,6 +106,7 @@ def to_float(value):
         return None
 
     try:
+
         if isinstance(value, (int, float)):
             return float(value)
 
@@ -119,6 +122,7 @@ def to_float(value):
         return float(text)
 
     except Exception:
+
         return None
 
 
@@ -228,7 +232,7 @@ def get_tsetmc_cdn():
 
 
 # ============================================================
-# SOURCE 2 - OLD TSETMC
+# OLD TSETMC PARSER
 # ============================================================
 
 def parse_old_market_watch(content):
@@ -261,7 +265,6 @@ def parse_old_market_watch(content):
             continue
 
         symbol = columns[2].strip()
-
         name = columns[3].strip()
 
         if not symbol:
@@ -292,6 +295,10 @@ def parse_old_market_watch(content):
 
     return None
 
+
+# ============================================================
+# SOURCE 2 - OLD TSETMC FAILOVER
+# ============================================================
 
 def get_old_market_watch():
 
@@ -371,6 +378,71 @@ def get_old_market_watch():
             )
 
     return None
+
+
+# ============================================================
+# SOURCE MANAGER
+# ============================================================
+
+def get_market_data():
+
+    errors = []
+
+    # --------------------------------------------------------
+    # SOURCE 1
+    # --------------------------------------------------------
+
+    print("")
+    print("🔎 FAILOVER SOURCE 1/2")
+
+    try:
+
+        rows = get_tsetmc_cdn()
+
+        if rows:
+
+            return rows, "TSETMC-CDN", errors
+
+        errors.append(
+            "TSETMC-CDN: no valid data"
+        )
+
+    except Exception as error:
+
+        errors.append(
+            "TSETMC-CDN: " + str(error)
+        )
+
+    # --------------------------------------------------------
+    # SOURCE 2
+    # --------------------------------------------------------
+
+    print("")
+    print("🔎 FAILOVER SOURCE 2/2")
+
+    try:
+
+        rows = get_old_market_watch()
+
+        if rows:
+
+            return rows, "TSETMC-OLD", errors
+
+        errors.append(
+            "TSETMC-OLD: no valid data"
+        )
+
+    except Exception as error:
+
+        errors.append(
+            "TSETMC-OLD: " + str(error)
+        )
+
+    # --------------------------------------------------------
+    # ALL FAILED
+    # --------------------------------------------------------
+
+    return None, None, errors
 
 
 # ============================================================
@@ -508,7 +580,6 @@ def normalize_old_row(row):
         return None
 
     symbol = row.get("symbol")
-
     name = row.get("name")
 
     price = to_float(
@@ -578,7 +649,6 @@ def score_stock(stock):
 
     score = 0
 
-    # رشد قیمت
     if change >= 3:
         score += 30
     elif change >= 2:
@@ -590,7 +660,6 @@ def score_stock(stock):
     elif change > 0:
         score += 5
 
-    # حجم
     if volume >= 5_000_000:
         score += 25
     elif volume >= 1_000_000:
@@ -600,7 +669,6 @@ def score_stock(stock):
     elif volume >= 100_000:
         score += 10
 
-    # تعداد معاملات
     if trades >= 1000:
         score += 20
     elif trades >= 500:
@@ -610,7 +678,6 @@ def score_stock(stock):
     elif trades >= 50:
         score += 5
 
-    # ارزش معاملات
     if value >= 50_000_000_000:
         score += 25
     elif value >= 10_000_000_000:
@@ -643,7 +710,6 @@ def find_top5(rows, source):
         if not stock:
             continue
 
-        # فقط نماد مثبت
         if stock["change"] <= 0:
             continue
 
@@ -674,11 +740,8 @@ def make_levels(stock):
     price = stock["price"]
 
     entry = price
-
     stop = price * 0.97
-
     target1 = price * 1.05
-
     target2 = price * 1.08
 
     return (
@@ -747,7 +810,6 @@ def send_top5(top5, source):
 
         telegram_send(message)
 
-        # فاصله بین پیام‌ها
         time.sleep(1)
 
 
@@ -775,28 +837,19 @@ def main():
         "🔎 شروع اسکن بازار..."
     )
 
-    rows = None
-    source = None
-
     # ========================================================
-    # SOURCE 1
+    # MULTI SOURCE FAILOVER
     # ========================================================
 
-    rows = get_tsetmc_cdn()
+    telegram_send(
+        "🔄 ATI BOURSE FAILOVER\n\n"
+        "در صورت قطع منبع اول، "
+        "ربات خودکار منبع بعدی را امتحان می‌کند.\n\n"
+        "1️⃣ TSETMC CDN\n"
+        "2️⃣ OLD TSETMC"
+    )
 
-    if rows:
-        source = "TSETMC-CDN"
-
-    # ========================================================
-    # SOURCE 2
-    # ========================================================
-
-    if not rows:
-
-        rows = get_old_market_watch()
-
-        if rows:
-            source = "TSETMC-OLD"
+    rows, source, errors = get_market_data()
 
     # ========================================================
     # NO DATA
@@ -804,17 +857,29 @@ def main():
 
     if not rows:
 
+        error_text = "\n".join(
+            "• " + error
+            for error in errors
+        )
+
         telegram_send(
             "❌ ATI BOURSE ERROR\n\n"
             "هیچ داده‌ای از منابع بازار دریافت نشد.\n\n"
-            "🔁 SOURCE 1: TSETMC CDN\n"
-            "🔁 SOURCE 2: OLD TSETMC\n\n"
+            "🔁 منابع بررسی‌شده:\n"
+            "1️⃣ TSETMC CDN\n"
+            "2️⃣ OLD TSETMC\n\n"
+            "📋 نتیجه منابع:\n"
+            f"{error_text}\n\n"
             "🚫 هیچ سهمی انتخاب نشد.\n"
             "🔒 REAL TRADING: OFF\n"
             f"🕐 {now_utc()}"
         )
 
         print("❌ NO MARKET DATA")
+        print("📋 ERRORS:")
+
+        for error in errors:
+            print(" -", error)
 
         return
 
@@ -828,9 +893,9 @@ def main():
     )
 
     telegram_send(
-        "📊 MARKET DATA OK\n\n"
+        "✅ MARKET DATA RECEIVED\n\n"
         f"📈 تعداد داده‌ها: {len(rows)}\n"
-        f"📡 منبع: {source}\n\n"
+        f"📡 منبع موفق: {source}\n\n"
         "🧠 در حال امتیازدهی سهم‌ها..."
     )
 
@@ -863,4 +928,20 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as error:
+
+        print(
+            "🚨 FATAL ERROR:",
+            str(error),
+        )
+
+        telegram_send(
+            "🚨 ATI BOURSE FATAL ERROR\n\n"
+            f"❌ {error}\n\n"
+            "🔒 REAL TRADING: OFF\n"
+            f"🕐 {now_utc()}"
+        )
+
+        raise
