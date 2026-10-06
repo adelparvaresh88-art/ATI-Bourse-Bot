@@ -1,12 +1,11 @@
 # ============================================================
-# ATI BOURSE BOT V2.6 - DATA RESCUE
+# ATI BOURSE BOT V2.7 - REST DATA RESCUE
 # Iran Stock Market TOP5 Scanner
-# GitHub Actions / Telegram
+# GitHub Actions + Telegram
 # REAL TRADING = OFF
 # ============================================================
 
 import os
-import re
 import json
 import time
 import math
@@ -17,15 +16,20 @@ from datetime import datetime, timezone
 # CONFIG
 # ============================================================
 
-VERSION = "ATI-BOURSE-V2.6-DATA-RESCUE"
+VERSION = "ATI-BOURSE-V2.7-REST-DATA-RESCUE"
 
 REAL_TRADING = False
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+TELEGRAM_BOT_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN", ""
+).strip()
+
+TELEGRAM_CHAT_ID = os.getenv(
+    "TELEGRAM_CHAT_ID", ""
+).strip()
 
 CONNECT_TIMEOUT = 5
-READ_TIMEOUT = 10
+READ_TIMEOUT = 12
 
 MAX_RETRIES = 2
 RETRY_DELAY = 1.5
@@ -34,78 +38,80 @@ MIN_VALID_ROWS = 5
 TOP_N = 5
 
 # ============================================================
-# URLS
+# CURRENT REST ENDPOINTS
 # ============================================================
 
-SOURCE_URLS = {
+MARKET_WATCH_URL = (
+    "https://cdn.tsetmc.com/api/ClosingPrice/"
+    "GetMarketWatch"
+    "?market=0"
+    "&paperTypes[0]=1"
+    "&paperTypes[1]=2"
+    "&paperTypes[2]=3"
+    "&paperTypes[3]=4"
+    "&paperTypes[4]=5"
+    "&paperTypes[5]=6"
+    "&paperTypes[6]=7"
+    "&paperTypes[7]=8"
+    "&paperTypes[8]=9"
+    "&withBestLimits=false"
+    "&hEven=0"
+    "&RefID=0"
+)
 
-    # SOURCE 1
-    "TSETMC CDN": [
-        "https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch"
-    ],
+MARKET_OVERVIEW_URL = (
+    "https://cdn.tsetmc.com/api/MarketData/"
+    "GetMarketOverview/0"
+)
 
-    # SOURCE 2
-    "TSETMC CDN MIRROR": [
-        "https://cdn10.tsetmc.com/api/ClosingPrice/GetMarketWatch"
-    ],
-
-    # SOURCE 3
-    "TSETMC MARKET MAP": [
-        "https://cdn.tsetmc.com/api/ClosingPrice/GetMarketMap"
-    ],
-
-    # SOURCE 4
-    "TSETMC MARKET OVERVIEW": [
-        "https://cdn.tsetmc.com/api/MarketData/GetMarketOverview/0"
-    ],
-
-    # SOURCE 5
-    "TSE WEBGW": [
-        "https://webgw.tse.ir/InstrumentProvider/api/v1/MarketWatch/MarketWatchCash/fa"
-    ],
-
-    # SOURCE 6
-    "OLD TSETMC HTTPS": [
-        "https://old.tsetmc.com/tsev2/data/MarketWatchInit.aspx?h=0&r=0"
-    ],
-
-    # SOURCE 7
-    "OLD TSETMC HTTP": [
-        "http://old.tsetmc.com/tsev2/data/MarketWatchInit.aspx?h=0&r=0"
-    ],
-
-    # SOURCE 8
-    "TSETMC PLUS": [
-        "https://old.tsetmc.com/tsev2/excel/MarketWatchPlus.aspx?d=0"
-    ],
-}
+# Secondary endpoint
+MARKET_WATCH_SIMPLE_URL = (
+    "https://cdn.tsetmc.com/api/ClosingPrice/"
+    "GetMarketWatch"
+)
 
 # ============================================================
-# HEADERS
+# HTTP HEADERS
 # ============================================================
 
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "AppleWebKit/537.36 "
+        "(KHTML, like Gecko) "
         "Chrome/131.0.0.0 Safari/537.36"
     ),
+
     "Accept": (
         "application/json,text/plain,text/csv,"
-        "application/vnd.ms-excel,*/*"
+        "text/html,*/*"
     ),
-    "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Connection": "keep-alive",
-    "Referer": "https://tsetmc.com/",
-    "Origin": "https://tsetmc.com",
-}
 
-# ============================================================
-# SESSION
-# ============================================================
+    "Accept-Language": (
+        "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7"
+    ),
+
+    "Referer": "https://www.tsetmc.com/",
+    "Origin": "https://www.tsetmc.com",
+
+    "Connection": "keep-alive",
+}
 
 session = requests.Session()
 session.headers.update(HEADERS)
+
+# ============================================================
+# TIME
+# ============================================================
+
+def now_utc():
+
+    return datetime.now(
+        timezone.utc
+    ).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
+
 
 # ============================================================
 # TELEGRAM
@@ -113,8 +119,13 @@ session.headers.update(HEADERS)
 
 def telegram_send(message):
 
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram secrets are missing.")
+    if not TELEGRAM_BOT_TOKEN:
+        print("TELEGRAM_BOT_TOKEN missing")
+        print(message)
+        return False
+
+    if not TELEGRAM_CHAT_ID:
+        print("TELEGRAM_CHAT_ID missing")
         print(message)
         return False
 
@@ -129,6 +140,7 @@ def telegram_send(message):
     }
 
     try:
+
         response = requests.post(
             url,
             json=payload,
@@ -138,26 +150,28 @@ def telegram_send(message):
         if response.ok:
             return True
 
-        print("Telegram error:", response.status_code, response.text[:300])
-        return False
+        print(
+            "Telegram HTTP error:",
+            response.status_code,
+            response.text[:300]
+        )
 
     except Exception as e:
-        print("Telegram exception:", e)
-        return False
+
+        print(
+            "Telegram error:",
+            type(e).__name__,
+            str(e)
+        )
+
+    return False
 
 
 # ============================================================
-# HELPERS
+# NUMBER HELPERS
 # ============================================================
 
-def now_utc():
-
-    return datetime.now(timezone.utc).strftime(
-        "%Y-%m-%d %H:%M:%S UTC"
-    )
-
-
-def safe_float(value, default=0.0):
+def to_float(value, default=0.0):
 
     if value is None:
         return default
@@ -167,9 +181,17 @@ def safe_float(value, default=0.0):
         if isinstance(value, bool):
             return default
 
-        if isinstance(value, (int, float)):
-            if math.isnan(value) or math.isinf(value):
+        if isinstance(
+            value,
+            (int, float)
+        ):
+
+            if math.isnan(value):
                 return default
+
+            if math.isinf(value):
+                return default
+
             return float(value)
 
         text = str(value).strip()
@@ -177,9 +199,12 @@ def safe_float(value, default=0.0):
         if not text:
             return default
 
-        text = text.replace(",", "")
-        text = text.replace("٬", "")
-        text = text.replace("٫", ".")
+        text = (
+            text
+            .replace(",", "")
+            .replace("٬", "")
+            .replace("٫", ".")
+        )
 
         return float(text)
 
@@ -187,118 +212,74 @@ def safe_float(value, default=0.0):
         return default
 
 
-def safe_int(value, default=0):
+def to_int(value, default=0):
 
     try:
-        return int(float(str(value).replace(",", "").strip()))
+        return int(
+            float(
+                str(value)
+                .replace(",", "")
+                .strip()
+            )
+        )
+
     except Exception:
         return default
 
 
-def clean_text(value):
-
-    if value is None:
-        return ""
-
-    return str(value).strip()
-
-
-def first_value(row, keys, default=None):
-
-    if not isinstance(row, dict):
-        return default
-
-    for key in keys:
-
-        if key in row:
-
-            value = row[key]
-
-            if value is not None and value != "":
-                return value
-
-    return default
-
-
-def find_list_recursive(obj):
-
-    """
-    Finds the largest list of dictionaries inside arbitrary JSON.
-    """
-
-    candidates = []
-
-    def walk(value):
-
-        if isinstance(value, list):
-
-            dict_items = [
-                x for x in value
-                if isinstance(x, dict)
-            ]
-
-            if dict_items:
-                candidates.append(dict_items)
-
-            for item in value:
-                walk(item)
-
-        elif isinstance(value, dict):
-
-            for child in value.values():
-                walk(child)
-
-    walk(obj)
-
-    if not candidates:
-        return []
-
-    return max(candidates, key=len)
-
-
 # ============================================================
-# HTTP REQUEST WITH RETRY
+# HTTP REQUEST
 # ============================================================
 
-def request_url(url):
+def http_get(url):
 
     last_error = "UNKNOWN"
 
-    for attempt in range(1, MAX_RETRIES + 1):
+    for attempt in range(
+        1,
+        MAX_RETRIES + 1
+    ):
 
         try:
 
             response = session.get(
                 url,
-                timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+                timeout=(
+                    CONNECT_TIMEOUT,
+                    READ_TIMEOUT
+                ),
                 allow_redirects=True
             )
 
-            status = response.status_code
-
-            if status == 200:
+            if response.status_code == 200:
 
                 if not response.content:
-                    last_error = "EMPTY RESPONSE"
+
+                    last_error = (
+                        "HTTP 200 / EMPTY BODY"
+                    )
 
                 else:
-                    return response
 
-            elif status in (403, 429):
+                    return response, "SUCCESS"
 
-                last_error = f"HTTP {status}"
+            elif response.status_code in (
+                429,
+                500,
+                502,
+                503,
+                504
+            ):
 
-                time.sleep(RETRY_DELAY * attempt)
-
-            elif status in (500, 502, 503, 504):
-
-                last_error = f"HTTP {status}"
-
-                time.sleep(RETRY_DELAY * attempt)
+                last_error = (
+                    f"HTTP {response.status_code}"
+                )
 
             else:
 
-                last_error = f"HTTP {status}"
+                last_error = (
+                    f"HTTP {response.status_code}"
+                )
 
         except requests.exceptions.ConnectTimeout:
 
@@ -312,300 +293,235 @@ def request_url(url):
 
             last_error = "TIMEOUT"
 
-        except requests.exceptions.ConnectionError as e:
+        except requests.exceptions.ConnectionError:
 
             last_error = "CONNECTION ERROR"
 
         except Exception as e:
 
-            last_error = f"{type(e).__name__}: {str(e)[:120]}"
+            last_error = (
+                f"{type(e).__name__}: "
+                f"{str(e)[:120]}"
+            )
 
         if attempt < MAX_RETRIES:
-            time.sleep(RETRY_DELAY * attempt)
+
+            time.sleep(
+                RETRY_DELAY * attempt
+            )
 
     return None, last_error
 
 
 # ============================================================
-# SOURCE 1/2 - JSON MARKET WATCH
+# JSON EXTRACTION
 # ============================================================
 
-def get_json_market_watch(source_name, urls):
+def unwrap_json(data):
 
-    for url in urls:
+    if not isinstance(data, dict):
+        return []
 
-        result = request_url(url)
+    # Known TSETMC envelope
+    known_keys = [
+        "marketwatch",
+        "marketWatch",
+        "marketWatchDto",
+        "data",
+        "result",
+        "items",
+    ]
 
-        if isinstance(result, tuple):
-            response = None
-            error = result[1]
-        else:
-            response = result
-            error = None
+    for key in known_keys:
 
-        if response is None:
-            continue
+        value = data.get(key)
 
-        try:
+        if isinstance(value, list):
+            return value
 
-            data = response.json()
+        if isinstance(value, dict):
 
-        except Exception:
+            for nested_key in known_keys:
 
-            try:
-                data = json.loads(response.text)
-            except Exception:
-                continue
+                nested = value.get(
+                    nested_key
+                )
 
-        rows = find_list_recursive(data)
+                if isinstance(
+                    nested,
+                    list
+                ):
+                    return nested
 
-        if len(rows) >= MIN_VALID_ROWS:
+    # Search recursively
+    found = []
 
-            return rows, (
-                f"SUCCESS / HTTP {response.status_code} / "
-                f"{len(rows)} rows / {url}"
-            )
+    def walk(obj):
 
-    return [], "FAILED"
+        nonlocal found
 
+        if isinstance(obj, list):
 
-# ============================================================
-# SOURCE 3 - MARKET MAP
-# ============================================================
+            dictionaries = [
+                x for x in obj
+                if isinstance(x, dict)
+            ]
 
-def get_market_map():
+            if len(dictionaries) > len(found):
+                found = dictionaries
 
-    urls = SOURCE_URLS["TSETMC MARKET MAP"]
+            for x in obj:
+                walk(x)
 
-    for url in urls:
+        elif isinstance(obj, dict):
 
-        result = request_url(url)
+            for value in obj.values():
+                walk(value)
 
-        if isinstance(result, tuple):
-            continue
+    walk(data)
 
-        response = result
-
-        try:
-            data = response.json()
-        except Exception:
-            continue
-
-        rows = find_list_recursive(data)
-
-        if len(rows) >= MIN_VALID_ROWS:
-
-            return rows, (
-                f"SUCCESS / HTTP {response.status_code} / "
-                f"{len(rows)} rows"
-            )
-
-    return [], "FAILED"
+    return found
 
 
 # ============================================================
-# SOURCE 4 - MARKET OVERVIEW
+# SOURCE 1 - FULL MARKET WATCH
+# ============================================================
+
+def get_market_watch():
+
+    print(
+        "Trying TSETMC REST MarketWatch..."
+    )
+
+    response, status = http_get(
+        MARKET_WATCH_URL
+    )
+
+    if response is None:
+
+        return [], status
+
+    try:
+
+        data = response.json()
+
+    except Exception:
+
+        return [], "INVALID JSON"
+
+    rows = unwrap_json(data)
+
+    if not rows:
+
+        return [], "JSON OK / NO ROWS"
+
+    return rows, (
+        f"SUCCESS / HTTP "
+        f"{response.status_code} / "
+        f"{len(rows)} RAW ROWS"
+    )
+
+
+# ============================================================
+# SOURCE 2 - SIMPLE MARKET WATCH
+# ============================================================
+
+def get_market_watch_simple():
+
+    response, status = http_get(
+        MARKET_WATCH_SIMPLE_URL
+    )
+
+    if response is None:
+
+        return [], status
+
+    try:
+
+        data = response.json()
+
+    except Exception:
+
+        return [], "INVALID JSON"
+
+    rows = unwrap_json(data)
+
+    if not rows:
+
+        return [], "JSON OK / NO ROWS"
+
+    return rows, (
+        f"SUCCESS / HTTP "
+        f"{response.status_code} / "
+        f"{len(rows)} RAW ROWS"
+    )
+
+
+# ============================================================
+# SOURCE 3 - MARKET OVERVIEW
 # ============================================================
 
 def get_market_overview():
 
-    urls = SOURCE_URLS["TSETMC MARKET OVERVIEW"]
-
-    for url in urls:
-
-        result = request_url(url)
-
-        if isinstance(result, tuple):
-            continue
-
-        response = result
-
-        try:
-            data = response.json()
-        except Exception:
-            continue
-
-        rows = find_list_recursive(data)
-
-        if rows:
-
-            return rows, (
-                f"SUCCESS / HTTP {response.status_code} / "
-                f"{len(rows)} rows"
-            )
-
-    return [], "FAILED"
-
-
-# ============================================================
-# SOURCE 5 - WEBGW
-# ============================================================
-
-def get_webgw():
-
-    urls = SOURCE_URLS["TSE WEBGW"]
-
-    for url in urls:
-
-        result = request_url(url)
-
-        if isinstance(result, tuple):
-            continue
-
-        response = result
-
-        try:
-
-            data = response.json()
-
-        except Exception:
-
-            try:
-                data = json.loads(response.text)
-            except Exception:
-                continue
-
-        rows = find_list_recursive(data)
-
-        if len(rows) >= MIN_VALID_ROWS:
-
-            return rows, (
-                f"SUCCESS / HTTP {response.status_code} / "
-                f"{len(rows)} rows"
-            )
-
-    return [], "FAILED"
-
-
-# ============================================================
-# OLD TSETMC PARSER
-# ============================================================
-
-def parse_old_market_watch(text):
-
-    rows = []
-
-    if not text:
-        return rows
-
-    text = text.strip()
-
-    # Common separators
-    records = re.split(r"\r?\n|;", text)
-
-    for record in records:
-
-        record = record.strip()
-
-        if not record:
-            continue
-
-        parts = record.split("@")
-
-        if len(parts) < 5:
-            continue
-
-        rows.append({
-            "raw_parts": parts
-        })
-
-    return rows
-
-
-def get_old_tsetmc():
-
-    all_urls = (
-        SOURCE_URLS["OLD TSETMC HTTPS"] +
-        SOURCE_URLS["OLD TSETMC HTTP"]
+    response, status = http_get(
+        MARKET_OVERVIEW_URL
     )
 
-    for url in all_urls:
+    if response is None:
 
-        result = request_url(url)
+        return [], status
 
-        if isinstance(result, tuple):
-            continue
+    try:
 
-        response = result
+        data = response.json()
 
-        rows = parse_old_market_watch(response.text)
+    except Exception:
 
-        if len(rows) >= MIN_VALID_ROWS:
+        return [], "INVALID JSON"
 
-            return rows, (
-                f"SUCCESS / HTTP {response.status_code} / "
-                f"{len(rows)} rows"
-            )
+    rows = unwrap_json(data)
 
-    return [], "FAILED"
-
-
-# ============================================================
-# MARKETWATCH PLUS
-# ============================================================
-
-def parse_plus(text):
-
-    rows = []
-
-    if not text:
-        return rows
-
-    lines = re.split(r"\r?\n", text)
-
-    for line in lines:
-
-        line = line.strip()
-
-        if not line:
-            continue
-
-        parts = re.split(r"[,;\t]", line)
-
-        if len(parts) >= 5:
-
-            rows.append({
-                "raw_parts": parts
-            })
-
-    return rows
-
-
-def get_marketwatch_plus():
-
-    urls = SOURCE_URLS["TSETMC PLUS"]
-
-    for url in urls:
-
-        result = request_url(url)
-
-        if isinstance(result, tuple):
-            continue
-
-        response = result
-
-        rows = parse_plus(response.text)
-
-        if len(rows) >= MIN_VALID_ROWS:
-
-            return rows, (
-                f"SUCCESS / HTTP {response.status_code} / "
-                f"{len(rows)} rows"
-            )
-
-    return [], "FAILED"
+    return rows, (
+        f"HTTP {response.status_code} / "
+        f"{len(rows)} ROWS"
+    )
 
 
 # ============================================================
-# NORMALIZE JSON ROW
+# FIND VALUE
 # ============================================================
 
-def normalize_json_row(row):
+def find_value(
+    row,
+    names,
+    default=None
+):
+
+    if not isinstance(row, dict):
+        return default
+
+    for name in names:
+
+        if name in row:
+
+            value = row[name]
+
+            if value is not None:
+                return value
+
+    return default
+
+
+# ============================================================
+# NORMALIZE MARKET WATCH
+# ============================================================
+
+def normalize_row(row):
 
     if not isinstance(row, dict):
         return None
 
-    symbol = first_value(
+    symbol = find_value(
         row,
         [
             "lVal18AFC",
@@ -614,221 +530,155 @@ def normalize_json_row(row):
             "symbolName",
             "shortName",
             "insName",
-            "name",
-            "lval18"
-        ]
+        ],
+        ""
     )
 
-    name = first_value(
+    name = find_value(
         row,
         [
             "lVal30",
             "name",
             "fullName",
-            "insName"
+            "companyName",
+            "insName",
         ],
         ""
     )
 
-    price = first_value(
+    last_price = find_value(
         row,
         [
             "pl",
             "pDrCotVal",
-            "last",
             "lastPrice",
             "priceLast",
-            "currentPrice"
-        ]
+            "last",
+        ],
+        0
     )
 
-    close = first_value(
+    close_price = find_value(
         row,
         [
             "pc",
             "pClosing",
+            "closingPrice",
             "close",
-            "closingPrice"
-        ]
+        ],
+        0
     )
 
-    yesterday = first_value(
+    yesterday = find_value(
         row,
         [
             "py",
             "priceYesterday",
-            "yesterday",
-            "previousClose"
-        ]
+            "previousClose",
+        ],
+        0
     )
 
-    volume = first_value(
+    volume = find_value(
         row,
         [
             "qTotTran5J",
             "volume",
+            "totalVolume",
             "volumeToday",
-            "totalVolume"
-        ]
+        ],
+        0
     )
 
-    trades = first_value(
+    trades = find_value(
         row,
         [
             "zTotTran",
-            "count",
             "tradeCount",
-            "trades"
-        ]
+            "count",
+            "trades",
+        ],
+        0
     )
 
-    value = first_value(
+    value = find_value(
         row,
         [
             "qTotCap",
-            "value",
             "tradeValue",
-            "totalValue"
-        ]
+            "totalValue",
+            "value",
+        ],
+        0
     )
+
+    symbol = str(symbol).strip()
 
     if not symbol:
         return None
 
-    price = safe_float(price)
+    price = to_float(
+        last_price
+    )
 
     if price <= 0:
-        price = safe_float(close)
+        price = to_float(
+            close_price
+        )
 
     if price <= 0:
         return None
 
-    close = safe_float(close)
+    close = to_float(
+        close_price
+    )
 
     if close <= 0:
         close = price
 
-    yesterday = safe_float(yesterday)
+    py = to_float(
+        yesterday
+    )
 
-    if yesterday <= 0:
-        yesterday = close
+    if py <= 0:
+        py = close
 
-    volume = safe_float(volume)
-    trades = safe_float(trades)
-    value = safe_float(value)
+    volume = to_float(
+        volume
+    )
 
-    change = 0.0
+    trades = to_float(
+        trades
+    )
 
-    if yesterday > 0:
-        change = ((price - yesterday) / yesterday) * 100
+    value = to_float(
+        value
+    )
 
-    return {
-        "symbol": clean_text(symbol),
-        "name": clean_text(name),
-        "price": price,
-        "close": close,
-        "yesterday": yesterday,
-        "change": change,
-        "volume": volume,
-        "trades": trades,
-        "value": value,
-    }
+    # If qTotCap is unavailable,
+    # approximate trade value.
+    if value <= 0 and volume > 0:
 
-
-# ============================================================
-# NORMALIZE OLD ROW
-# ============================================================
-
-def normalize_old_row(row):
-
-    if not isinstance(row, dict):
-        return None
-
-    parts = row.get("raw_parts", [])
-
-    if len(parts) < 5:
-        return None
-
-    # Old TSETMC format differs between versions.
-    # Try to detect useful numeric fields.
-
-    text_parts = [
-        clean_text(x)
-        for x in parts
-    ]
-
-    symbol = ""
-
-    for item in text_parts[:10]:
-
-        if re.search(r"[\u0600-\u06FF]", item):
-
-            if 1 <= len(item) <= 30:
-
-                symbol = item
-                break
-
-    if not symbol:
-        return None
-
-    numbers = []
-
-    for item in text_parts:
-
-        value = safe_float(item, None)
-
-        if value is not None:
-            numbers.append(value)
-
-    if not numbers:
-        return None
-
-    # Heuristic extraction
-    price = 0
-    yesterday = 0
-    volume = 0
-    trades = 0
-    value = 0
-
-    # Prefer realistic price range
-    for n in numbers:
-
-        if 1 <= n <= 100000000:
-
-            if price == 0:
-                price = n
-
-    if price <= 0:
-        return None
-
-    for n in numbers:
-
-        if n > 100000:
-            volume = max(volume, n)
-
-        if 20 <= n <= 100000:
-            if n != price:
-                yesterday = n
-
-        if 1 <= n <= 10000:
-            trades = max(trades, n)
-
-    value = price * volume
-
-    if yesterday <= 0:
-        yesterday = price
+        value = (
+            price * volume
+        )
 
     change = 0.0
 
-    if yesterday > 0:
-        change = ((price - yesterday) / yesterday) * 100
+    if py > 0:
+
+        change = (
+            (price - py)
+            / py
+            * 100
+        )
 
     return {
         "symbol": symbol,
-        "name": "",
+        "name": str(name).strip(),
         "price": price,
-        "close": price,
-        "yesterday": yesterday,
+        "close": close,
+        "yesterday": py,
         "change": change,
         "volume": volume,
         "trades": trades,
@@ -837,61 +687,44 @@ def normalize_old_row(row):
 
 
 # ============================================================
-# NORMALIZE ANY SOURCE
+# NORMALIZE ALL
 # ============================================================
 
 def normalize_rows(rows):
 
-    normalized = []
+    result = []
+
+    seen = set()
 
     for row in rows:
 
-        item = None
+        item = normalize_row(
+            row
+        )
 
-        if isinstance(row, dict):
-
-            if "raw_parts" in row:
-                item = normalize_old_row(row)
-            else:
-                item = normalize_json_row(row)
-
-        if item:
-
-            symbol = item["symbol"]
-
-            # Remove index / invalid rows
-            if not symbol:
-                continue
-
-            if len(symbol) > 40:
-                continue
-
-            # Avoid obvious non-stock rows
-            bad_names = [
-                "شاخص",
-                "INDEX",
-                "TEDPIX",
-            ]
-
-            if any(
-                bad.lower() in symbol.lower()
-                for bad in bad_names
-            ):
-                continue
-
-            normalized.append(item)
-
-    # Deduplicate
-    unique = {}
-
-    for item in normalized:
+        if item is None:
+            continue
 
         symbol = item["symbol"]
 
-        if symbol not in unique:
-            unique[symbol] = item
+        if symbol in seen:
+            continue
 
-    return list(unique.values())
+        seen.add(symbol)
+
+        # Remove obvious indexes
+        upper = symbol.upper()
+
+        if upper in (
+            "TEDPIX",
+            "INDEX",
+            "شاخص"
+        ):
+            continue
+
+        result.append(item)
+
+    return result
 
 
 # ============================================================
@@ -907,7 +740,10 @@ def score_stock(stock):
     trades = stock["trades"]
     value = stock["value"]
 
-    # PRICE MOMENTUM
+    # ----------------------------
+    # MOMENTUM
+    # ----------------------------
+
     if change >= 3:
         score += 30
 
@@ -923,7 +759,10 @@ def score_stock(stock):
     elif change > 0:
         score += 5
 
+    # ----------------------------
     # VOLUME
+    # ----------------------------
+
     if volume >= 5_000_000:
         score += 25
 
@@ -936,7 +775,10 @@ def score_stock(stock):
     elif volume >= 100_000:
         score += 10
 
+    # ----------------------------
     # TRADES
+    # ----------------------------
+
     if trades >= 1000:
         score += 20
 
@@ -949,7 +791,10 @@ def score_stock(stock):
     elif trades >= 50:
         score += 5
 
+    # ----------------------------
     # VALUE
+    # ----------------------------
+
     if value >= 50_000_000_000:
         score += 25
 
@@ -973,19 +818,18 @@ def score_stock(stock):
 
 def find_top5(rows):
 
-    if not rows:
-        return []
-
     scored = []
 
     for row in rows:
 
         try:
+
             scored.append(
                 score_stock(row)
             )
+
         except Exception:
-            pass
+            continue
 
     scored.sort(
         key=lambda x: (
@@ -1002,231 +846,189 @@ def find_top5(rows):
 
 
 # ============================================================
-# PRICE LEVELS
+# LEVELS
 # ============================================================
 
 def make_levels(price):
 
-    entry = price
-
-    stop = price * 0.97
-
-    target1 = price * 1.05
-
-    target2 = price * 1.08
-
     return {
-        "entry": entry,
-        "stop": stop,
-        "target1": target1,
-        "target2": target2,
+        "entry": price,
+        "stop": price * 0.97,
+        "tp1": price * 1.05,
+        "tp2": price * 1.08,
     }
 
 
 # ============================================================
-# FORMAT NUMBER
+# FORMAT
 # ============================================================
 
 def fmt(value):
 
+    value = float(value)
+
     if value >= 1_000_000_000:
-        return f"{value / 1_000_000_000:.2f}B"
+
+        return (
+            f"{value / 1_000_000_000:.2f}B"
+        )
 
     if value >= 1_000_000:
-        return f"{value / 1_000_000:.2f}M"
+
+        return (
+            f"{value / 1_000_000:.2f}M"
+        )
 
     if value >= 1_000:
-        return f"{value / 1_000:.2f}K"
+
+        return (
+            f"{value / 1_000:.2f}K"
+        )
 
     if value >= 1:
+
         return f"{value:.2f}"
 
     return f"{value:.6f}"
 
 
 # ============================================================
-# SEND TOP5
+# SEND TOP 5
 # ============================================================
 
-def send_top5(top5, source_name):
+def send_top5(
+    top5,
+    source
+):
 
     if not top5:
 
         telegram_send(
-            "❌ ATI BOURSE ERROR\n\n"
-            "داده دریافت شد اما سهم قابل‌قبولی "
-            "برای انتخاب TOP5 پیدا نشد.\n\n"
-            f"📡 SOURCE: {source_name}\n"
+            "⚠️ ATI BOURSE\n\n"
+            "داده دریافت شد اما "
+            "TOP5 قابل انتخاب نبود.\n\n"
+            f"📡 SOURCE: {source}\n"
             "🔒 REAL TRADING: OFF\n"
             f"🕐 {now_utc()}"
         )
 
         return
 
-    header = (
+    telegram_send(
         "🚀 ATI BOURSE TOP5\n"
         f"⚡ {VERSION}\n"
         "📊 بورس و فرابورس ایران\n"
-        f"📡 DATA: {source_name}\n"
+        f"📡 DATA: {source}\n"
         "🔒 REAL TRADING: OFF\n"
-        f"🕐 {now_utc()}\n"
+        f"🕐 {now_utc()}"
     )
 
-    telegram_send(header)
-
-    for index, stock in enumerate(top5, 1):
+    for index, stock in enumerate(
+        top5,
+        1
+    ):
 
         levels = make_levels(
             stock["price"]
         )
 
-        reason_parts = []
+        reasons = []
 
         if stock["change"] > 0:
-            reason_parts.append(
+            reasons.append(
                 f"رشد {stock['change']:.2f}%"
             )
 
         if stock["volume"] >= 1_000_000:
-            reason_parts.append("حجم بالا")
+            reasons.append(
+                "حجم معاملات بالا"
+            )
 
         if stock["trades"] >= 500:
-            reason_parts.append("معاملات قوی")
+            reasons.append(
+                "تعداد معاملات مناسب"
+            )
 
         if stock["value"] >= 10_000_000_000:
-            reason_parts.append("ارزش معاملات بالا")
+            reasons.append(
+                "ارزش معاملات بالا"
+            )
 
-        reason = " + ".join(reason_parts)
+        reason = " + ".join(
+            reasons
+        )
 
         if not reason:
-            reason = "امتیاز کلی بازار"
+            reason = (
+                "امتیاز مناسب در فیلتر بازار"
+            )
 
         message = (
-            f"#{index} 🟢 {stock['symbol']}\n"
+            f"#{index} 🟢 "
+            f"{stock['symbol']}\n"
             f"📌 {stock['name']}\n\n"
 
-            f"⭐ SCORE: {stock['score']}\n"
-            f"📈 CHANGE: {stock['change']:.2f}%\n"
-            f"📊 VOLUME: {fmt(stock['volume'])}\n"
-            f"🔄 TRADES: {fmt(stock['trades'])}\n"
-            f"💰 VALUE: {fmt(stock['value'])}\n\n"
+            f"⭐ SCORE: "
+            f"{stock['score']}\n"
 
-            f"🎯 ENTRY: {fmt(levels['entry'])}\n"
-            f"🛑 STOP: {fmt(levels['stop'])}\n"
-            f"🎯 TP1 +5%: {fmt(levels['target1'])}\n"
-            f"🚀 TP2 +8%: {fmt(levels['target2'])}\n\n"
+            f"📈 CHANGE: "
+            f"{stock['change']:.2f}%\n"
 
-            f"🧠 دلیل انتخاب:\n"
+            f"📊 VOLUME: "
+            f"{fmt(stock['volume'])}\n"
+
+            f"🔄 TRADES: "
+            f"{fmt(stock['trades'])}\n"
+
+            f"💰 VALUE: "
+            f"{fmt(stock['value'])}\n\n"
+
+            f"🎯 ENTRY: "
+            f"{fmt(levels['entry'])}\n"
+
+            f"🛑 STOP -3%: "
+            f"{fmt(levels['stop'])}\n"
+
+            f"🎯 TP1 +5%: "
+            f"{fmt(levels['tp1'])}\n"
+
+            f"🚀 TP2 +8%: "
+            f"{fmt(levels['tp2'])}\n\n"
+
+            f"🧠 دلیل:\n"
             f"{reason}\n\n"
 
-            "⚠️ این فقط سیگنال تحلیلی است.\n"
+            "⚠️ تحلیل و پیشنهاد است.\n"
             "🚫 معامله واقعی انجام نمی‌شود."
         )
 
-        telegram_send(message)
+        telegram_send(
+            message
+        )
 
         time.sleep(0.5)
 
 
 # ============================================================
-# SOURCE TEST
+# DIAGNOSTIC
 # ============================================================
 
-def try_source(source_name):
+def diagnostic_message(
+    diagnostics
+):
 
-    print(
-        f"\n========== {source_name} =========="
-    )
+    lines = []
 
-    # --------------------------------------------------------
-    # JSON MARKET WATCH
-    # --------------------------------------------------------
-
-    if source_name == "TSETMC CDN":
-
-        rows, status = get_json_market_watch(
-            source_name,
-            SOURCE_URLS[source_name]
-        )
-
-        if rows:
-            return rows, status
-
-        return [], "TIMEOUT / FAILED"
-
-    # --------------------------------------------------------
-
-    if source_name == "TSETMC CDN MIRROR":
-
-        rows, status = get_json_market_watch(
-            source_name,
-            SOURCE_URLS[source_name]
-        )
-
-        if rows:
-            return rows, status
-
-        return [], "TIMEOUT / FAILED"
-
-    # --------------------------------------------------------
-
-    if source_name == "TSETMC MARKET MAP":
-
-        rows, status = get_market_map()
-
-        if rows:
-            return rows, status
-
-        return [], "TIMEOUT / FAILED"
-
-    # --------------------------------------------------------
-
-    if source_name == "TSETMC MARKET OVERVIEW":
-
-        rows, status = get_market_overview()
-
-        if rows:
-            return rows, status
-
-        return [], "TIMEOUT / FAILED"
-
-    # --------------------------------------------------------
-
-    if source_name == "TSE WEBGW":
-
-        rows, status = get_webgw()
-
-        if rows:
-            return rows, status
-
-        return [], "TIMEOUT / FAILED"
-
-    # --------------------------------------------------------
-
-    if source_name in (
-        "OLD TSETMC HTTPS",
-        "OLD TSETMC HTTP"
+    for index, item in enumerate(
+        diagnostics,
+        1
     ):
 
-        rows, status = get_old_tsetmc()
+        lines.append(
+            f"{index}️⃣ {item}"
+        )
 
-        if rows:
-            return rows, status
-
-        return [], "TIMEOUT / FAILED"
-
-    # --------------------------------------------------------
-
-    if source_name == "TSETMC PLUS":
-
-        rows, status = get_marketwatch_plus()
-
-        if rows:
-            return rows, status
-
-        return [], "TIMEOUT / FAILED"
-
-    return [], "UNKNOWN SOURCE"
+    return "\n".join(lines)
 
 
 # ============================================================
@@ -1236,12 +1038,25 @@ def try_source(source_name):
 def main():
 
     print(
-        f"ATI BOURSE {VERSION}"
+        "================================"
+    )
+
+    print(
+        VERSION
     )
 
     print(
         "REAL TRADING:",
         REAL_TRADING
+    )
+
+    print(
+        "TIME:",
+        now_utc()
+    )
+
+    print(
+        "================================"
     )
 
     telegram_send(
@@ -1250,140 +1065,193 @@ def main():
         "📊 بورس و فرابورس ایران\n"
         "🔒 REAL TRADING: OFF\n"
         "🎯 هدف: پیدا کردن ۵ سهم برتر\n"
-        "🔎 شروع DATA RESCUE..."
+        "🌐 REST API DATA MODE\n"
+        f"🕐 {now_utc()}"
     )
 
-    diagnostic = []
+    diagnostics = []
 
-    source_order = [
-        "TSETMC CDN",
-        "TSETMC CDN MIRROR",
-        "TSETMC MARKET MAP",
-        "TSETMC MARKET OVERVIEW",
-        "TSE WEBGW",
-        "OLD TSETMC HTTPS",
-        "OLD TSETMC HTTP",
-        "TSETMC PLUS",
-    ]
+    # ========================================================
+    # SOURCE 1
+    # ========================================================
 
-    for number, source_name in enumerate(
-        source_order,
-        1
-    ):
+    telegram_send(
+        "🔎 SOURCE 1\n"
+        "📡 TSETMC REST MarketWatch\n"
+        "⏳ در حال دریافت داده..."
+    )
 
-        telegram_send(
-            f"🔎 SOURCE {number}\n"
-            f"📡 {source_name}\n"
-            "⏳ در حال دریافت داده..."
+    rows, status = (
+        get_market_watch()
+    )
+
+    if rows:
+
+        normalized = normalize_rows(
+            rows
         )
 
-        try:
-
-            rows, status = try_source(
-                source_name
-            )
-
-        except Exception as e:
-
-            rows = []
-
-            status = (
-                f"ERROR: "
-                f"{type(e).__name__}: "
-                f"{str(e)[:150]}"
-            )
-
-        if rows:
-
-            normalized = normalize_rows(
-                rows
-            )
-
-            print(
-                source_name,
-                "RAW:",
-                len(rows),
-                "NORMALIZED:",
-                len(normalized)
-            )
-
-            if len(normalized) >= MIN_VALID_ROWS:
-
-                telegram_send(
-                    f"✅ SOURCE {number} SUCCESS\n"
-                    f"📡 {source_name}\n"
-                    f"📊 RAW: {len(rows)}\n"
-                    f"📈 VALID: {len(normalized)}\n"
-                    "➡️ شروع انتخاب TOP5..."
-                )
-
-                top5 = find_top5(
-                    normalized
-                )
-
-                send_top5(
-                    top5,
-                    source_name
-                )
-
-                return
-
-            else:
-
-                diagnostic.append(
-                    f"{number}️⃣ {source_name}: "
-                    f"DATA BUT INVALID "
-                    f"({len(normalized)} valid)"
-                )
-
-                telegram_send(
-                    f"⚠️ SOURCE {number} DATA دریافت شد\n"
-                    f"📡 {source_name}\n"
-                    f"📊 RAW: {len(rows)}\n"
-                    f"❌ VALID: {len(normalized)}\n"
-                    "➡️ رفتن به منبع بعدی..."
-                )
-
-        else:
-
-            diagnostic.append(
-                f"{number}️⃣ {source_name}: "
-                f"{status}"
-            )
+        if len(normalized) >= MIN_VALID_ROWS:
 
             telegram_send(
-                f"❌ SOURCE {number} FAILED\n"
-                f"📡 {source_name}\n"
-                f"⚠️ {status}\n"
-                "➡️ رفتن به SOURCE بعدی..."
+                "✅ SOURCE 1 SUCCESS\n"
+                "📡 TSETMC REST MarketWatch\n"
+                f"📊 RAW: {len(rows)}\n"
+                f"📈 VALID: {len(normalized)}\n"
+                "➡️ انتخاب TOP5..."
             )
+
+            top5 = find_top5(
+                normalized
+            )
+
+            send_top5(
+                top5,
+                "TSETMC REST MarketWatch"
+            )
+
+            return
+
+        diagnostics.append(
+            "TSETMC REST MarketWatch: "
+            f"RAW={len(rows)} / "
+            f"VALID={len(normalized)}"
+        )
+
+    else:
+
+        diagnostics.append(
+            "TSETMC REST MarketWatch: "
+            f"{status}"
+        )
+
+    telegram_send(
+        "❌ SOURCE 1 FAILED\n"
+        "📡 TSETMC REST MarketWatch\n"
+        f"⚠️ {status}\n"
+        "➡️ رفتن به SOURCE 2..."
+    )
+
+    # ========================================================
+    # SOURCE 2
+    # ========================================================
+
+    telegram_send(
+        "🔎 SOURCE 2\n"
+        "📡 TSETMC REST SIMPLE\n"
+        "⏳ در حال دریافت داده..."
+    )
+
+    rows, status = (
+        get_market_watch_simple()
+    )
+
+    if rows:
+
+        normalized = normalize_rows(
+            rows
+        )
+
+        if len(normalized) >= MIN_VALID_ROWS:
+
+            telegram_send(
+                "✅ SOURCE 2 SUCCESS\n"
+                "📡 TSETMC REST SIMPLE\n"
+                f"📊 RAW: {len(rows)}\n"
+                f"📈 VALID: {len(normalized)}\n"
+                "➡️ انتخاب TOP5..."
+            )
+
+            top5 = find_top5(
+                normalized
+            )
+
+            send_top5(
+                top5,
+                "TSETMC REST SIMPLE"
+            )
+
+            return
+
+        diagnostics.append(
+            "TSETMC REST SIMPLE: "
+            f"RAW={len(rows)} / "
+            f"VALID={len(normalized)}"
+        )
+
+    else:
+
+        diagnostics.append(
+            "TSETMC REST SIMPLE: "
+            f"{status}"
+        )
+
+    telegram_send(
+        "❌ SOURCE 2 FAILED\n"
+        "📡 TSETMC REST SIMPLE\n"
+        f"⚠️ {status}\n"
+        "➡️ بررسی نهایی..."
+    )
+
+    # ========================================================
+    # SOURCE 3 - OVERVIEW
+    # ========================================================
+
+    telegram_send(
+        "🔎 SOURCE 3\n"
+        "📡 TSETMC MARKET OVERVIEW\n"
+        "⏳ بررسی اتصال REST..."
+    )
+
+    rows, status = (
+        get_market_overview()
+    )
+
+    if rows:
+
+        telegram_send(
+            "⚠️ SOURCE 3 پاسخ داد\n"
+            "📡 TSETMC MARKET OVERVIEW\n"
+            f"📊 ROWS: {len(rows)}\n\n"
+            "ℹ️ این endpoint برای TOP5 "
+            "کافی نیست؛ MarketWatch لازم است."
+        )
+
+        diagnostics.append(
+            "Market Overview: "
+            f"reachable / {len(rows)} rows"
+        )
+
+    else:
+
+        diagnostics.append(
+            "Market Overview: "
+            f"{status}"
+        )
 
     # ========================================================
     # ALL FAILED
     # ========================================================
 
-    diagnostic_text = "\n".join(
-        diagnostic
-    )
-
-    final_message = (
+    final = (
         "❌ ATI BOURSE ERROR\n\n"
-        "تمام منابع داده شکست خوردند.\n\n"
+        "REST API نیز از GitHub Actions "
+        "داده معتبر بازار دریافت نکرد.\n\n"
         "📋 DIAGNOSTIC:\n"
-        f"{diagnostic_text}\n\n"
+        f"{diagnostic_message(diagnostics)}\n\n"
         "🚫 هیچ سهمی انتخاب نشد.\n"
         "🔒 REAL TRADING: OFF\n"
         f"🕐 {now_utc()}\n\n"
-        "💡 احتمال زیاد GitHub Actions "
-        "به سرویس‌های بازار TSETMC/TSE "
-        "دسترسی شبکه‌ای ندارد."
+        "⚠️ اگر REST MarketWatch هم "
+        "TIMEOUT باشد، مشکل شبکه/IP "
+        "GitHub Actions است، نه TOP5."
     )
 
     telegram_send(
-        final_message
+        final
     )
 
-    print(final_message)
+    print(final)
 
 
 # ============================================================
