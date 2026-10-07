@@ -1,46 +1,43 @@
 # ============================================================
-# ATI BOURSE BOT
-# V2.4 - NO BRS API KEY
-# بورس ایران - Public Market Data
-#
-# REAL TRADING: OFF
-# هیچ سفارش خرید/فروشی ارسال نمی‌شود.
+# ATI BOURSE BOT V3
+# NO BRS_API_KEY
+# TSETMC + JINA READER FALLBACK
+# READ-ONLY / NO REAL TRADING
 # ============================================================
 
 import os
+import re
 import json
 import time
-import ssl
-import csv
-import io
 from datetime import datetime, timezone
-from urllib.request import Request, urlopen
-from urllib.error import URLError, HTTPError
+from urllib.parse import quote
 
-BOT_VERSION = "ATI-BOURSE-V2.4-NO-APIKEY"
+import requests
+
 
 # ============================================================
-# TELEGRAM
+# CONFIG
 # ============================================================
 
-TELEGRAM_BOT_TOKEN = (
+BOT_VERSION = "ATI-BOURSE-V3-NO-APIKEY-JINA"
+
+REAL_TRADING = False
+
+TIMEOUT = 25
+MAX_SYMBOLS = 80
+
+TELEGRAM_TOKEN = (
     os.getenv("BOURSE_TELEGRAM_BOT_TOKEN")
     or os.getenv("TELEGRAM_BOT_TOKEN")
+    or ""
 )
 
 TELEGRAM_CHAT_ID = (
     os.getenv("BOURSE_TELEGRAM_CHAT_ID")
     or os.getenv("TELEGRAM_CHAT_ID")
+    or ""
 )
 
-# ============================================================
-# SAFETY
-# ============================================================
-
-REAL_TRADING = False
-
-TIMEOUT = 25
-MAX_SYMBOLS = 100
 
 # ============================================================
 # HEADERS
@@ -49,158 +46,56 @@ MAX_SYMBOLS = 100
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 "
-        "(KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 Chrome/130.0 Safari/537.36"
     ),
-    "Accept": (
-        "application/json,text/plain,"
-        "application/vnd.ms-excel,"
-        "application/octet-stream,*/*"
-    ),
-    "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
-    "Referer": "https://www.tsetmc.com/",
-    "Origin": "https://www.tsetmc.com",
+    "Accept": "*/*",
     "Connection": "close",
 }
 
+
+JINA_HEADERS = {
+    "User-Agent": "ATI-Bourse-Bot/3.0",
+    "Accept": "application/json",
+    "X-No-Cache": "true",
+    "X-Engine": "direct",
+}
+
+
 # ============================================================
-# PUBLIC SOURCES
-#
-# اول CDN جدید
-# سپس mirror
-# سپس legacy Excel
-#
-# هیچ API KEY لازم نیست.
+# TSETMC SOURCES
 # ============================================================
 
-JSON_SOURCES = [
-
+DIRECT_SOURCES = [
+    (
+        "TSETMC CDN MarketWatch",
+        "https://cdn.tsetmc.com/api/MarketWatch"
+    ),
     (
         "TSETMC CDN GetMarketWatch",
-        "https://cdn.tsetmc.com/api/ClosingPrice/"
-        "GetMarketWatch"
-        "?market=0"
-        "&industrialGroup="
-        "&paperTypes%5B0%5D=1"
-        "&paperTypes%5B1%5D=2"
-        "&paperTypes%5B2%5D=3"
-        "&paperTypes%5B3%5D=4"
-        "&paperTypes%5B4%5D=5"
-        "&paperTypes%5B5%5D=6"
-        "&paperTypes%5B6%5D=7"
-        "&paperTypes%5B7%5D=8"
-        "&paperTypes%5B8%5D=9"
-        "&showTraded=false"
-        "&withBestLimits=false"
-        "&hEven=0"
-        "&RefID=0"
+        "https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch"
     ),
-
     (
-        "TSETMC CDN Mirror",
-        "https://cdn10.tsetmc.com/api/ClosingPrice/"
-        "GetMarketWatch"
-        "?market=0"
-        "&industrialGroup="
-        "&paperTypes%5B0%5D=1"
-        "&paperTypes%5B1%5D=2"
-        "&paperTypes%5B2%5D=3"
-        "&paperTypes%5B3%5D=4"
-        "&paperTypes%5B4%5D=5"
-        "&paperTypes%5B5%5D=6"
-        "&paperTypes%5B6%5D=7"
-        "&paperTypes%5B7%5D=8"
-        "&paperTypes%5B8%5D=9"
-        "&showTraded=false"
-        "&withBestLimits=false"
-        "&hEven=0"
-        "&RefID=0"
-    ),
-]
-
-EXCEL_SOURCES = [
-
-    (
-        "TSETMC Legacy MarketWatchPlus",
-        "https://old.tsetmc.com/tsev2/excel/"
-        "MarketWatchPlus.aspx?d=0"
-    ),
-
-    (
-        "TSETMC Legacy MarketWatchPlus Format",
-        "https://old.tsetmc.com/tsev2/excel/"
-        "MarketWatchPlus.aspx?d=0&format=0"
+        "TSETMC Legacy MarketWatch",
+        "https://old.tsetmc.com/tsev2/excel/MarketWatchPlus.aspx?d=0"
     ),
 ]
 
 
-# ============================================================
-# TIME
-# ============================================================
-
-def now_utc():
-
-    return datetime.now(
-        timezone.utc
-    ).strftime(
-        "%Y-%m-%d %H:%M:%S UTC"
-    )
-
-
-# ============================================================
-# HTTP
-# ============================================================
-
-def http_get(url):
-
-    req = Request(
-        url,
-        headers=HEADERS,
-        method="GET"
-    )
-
-    try:
-
-        with urlopen(
-            req,
-            timeout=TIMEOUT
-        ) as response:
-
-            status = response.status
-
-            content_type = (
-                response.headers.get(
-                    "Content-Type",
-                    ""
-                )
-            )
-
-            data = response.read()
-
-            return (
-                status,
-                content_type,
-                data
-            )
-
-    except ssl.SSLError as e:
-
-        raise RuntimeError(
-            f"SSL ERROR: {e}"
-        )
-
-    except URLError as e:
-
-        reason = getattr(
-            e,
-            "reason",
-            e
-        )
-
-        raise RuntimeError(
-            f"CONNECTION ERROR: {reason}"
-        )
+# JINA PROXY SOURCES
+JINA_SOURCES = [
+    (
+        "JINA -> TSETMC CDN MarketWatch",
+        "https://r.jina.ai/https://cdn.tsetmc.com/api/MarketWatch"
+    ),
+    (
+        "JINA -> TSETMC GetMarketWatch",
+        "https://r.jina.ai/https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch"
+    ),
+    (
+        "JINA -> TSETMC Legacy MarketWatch",
+        "https://r.jina.ai/http://old.tsetmc.com/tsev2/excel/MarketWatchPlus.aspx?d=0"
+    ),
+]
 
 
 # ============================================================
@@ -208,557 +103,613 @@ def http_get(url):
 # ============================================================
 
 def telegram_send(text):
-
-    if not TELEGRAM_BOT_TOKEN:
-
-        print(
-            "⚠️ TELEGRAM_BOT_TOKEN NOT FOUND"
-        )
-
-        return False
-
-    if not TELEGRAM_CHAT_ID:
-
-        print(
-            "⚠️ TELEGRAM_CHAT_ID NOT FOUND"
-        )
-
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return False
 
     url = (
-        "https://api.telegram.org/bot"
-        f"{TELEGRAM_BOT_TOKEN}"
-        "/sendMessage"
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     )
 
-    payload = json.dumps({
+    payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
         "disable_web_page_preview": True,
-    }).encode("utf-8")
+    }
 
     try:
-
-        req = Request(
+        r = requests.post(
             url,
-            data=payload,
-            headers={
-                "Content-Type":
-                    "application/json",
-                "User-Agent":
-                    "ATI-Bourse-V2.4",
-            },
-            method="POST"
+            json=payload,
+            timeout=20,
         )
 
-        with urlopen(
-            req,
-            timeout=20
-        ) as response:
+        return r.ok
 
-            return response.status == 200
-
-    except Exception as e:
-
-        print(
-            "⚠️ TELEGRAM ERROR:",
-            type(e).__name__,
-            str(e)
-        )
-
+    except Exception:
         return False
 
 
 # ============================================================
-# NUMBER
+# NUMBER HELPERS
 # ============================================================
 
-def to_float(value):
+def clean_number(value):
 
     if value is None:
         return None
 
-    try:
+    if isinstance(value, bool):
+        return None
 
-        text = str(value).strip()
-
-        if not text:
+    if isinstance(value, (int, float)):
+        try:
+            return float(value)
+        except Exception:
             return None
 
-        text = (
-            text
-            .replace(",", "")
-            .replace("٬", "")
-            .replace("٫", ".")
-        )
+    text = str(value).strip()
 
-        return float(text)
-
-    except Exception:
-
+    if not text:
         return None
+
+    text = (
+        text.replace(",", "")
+        .replace("٬", "")
+        .replace("،", "")
+        .replace("%", "")
+        .strip()
+    )
+
+    # Persian / Arabic digits
+    trans = str.maketrans(
+        "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
+        "01234567890123456789"
+    )
+
+    text = text.translate(trans)
+
+    try:
+        return float(text)
+    except Exception:
+        return None
+
+
+def first_number(obj, keys):
+
+    if not isinstance(obj, dict):
+        return None
+
+    lower = {
+        str(k).lower(): v
+        for k, v in obj.items()
+    }
+
+    for key in keys:
+
+        if key.lower() in lower:
+            value = clean_number(lower[key.lower()])
+
+            if value is not None:
+                return value
+
+    return None
+
+
+# ============================================================
+# TEXT HELPERS
+# ============================================================
+
+def clean_text(value):
+
+    if value is None:
+        return ""
+
+    return str(value).strip()
+
+
+def find_first_text(obj, keys):
+
+    if not isinstance(obj, dict):
+        return ""
+
+    lower = {
+        str(k).lower(): v
+        for k, v in obj.items()
+    }
+
+    for key in keys:
+
+        if key.lower() in lower:
+
+            value = lower[key.lower()]
+
+            if isinstance(value, str):
+                value = value.strip()
+
+                if value:
+                    return value
+
+    return ""
 
 
 # ============================================================
 # JSON EXTRACTION
 # ============================================================
 
-def extract_rows(obj, depth=0):
+def extract_json_from_text(text):
 
-    if depth > 8:
-        return []
+    if not text:
+        return None
+
+    text = text.strip()
+
+    # Direct JSON
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    # Markdown code block
+    text2 = re.sub(
+        r"^```(?:json)?\s*",
+        "",
+        text,
+        flags=re.IGNORECASE
+    )
+
+    text2 = re.sub(
+        r"\s*```$",
+        "",
+        text2
+    )
+
+    try:
+        return json.loads(text2)
+    except Exception:
+        pass
+
+    # Find first object
+    start_obj = text.find("{")
+    end_obj = text.rfind("}")
+
+    if start_obj >= 0 and end_obj > start_obj:
+
+        candidate = text[start_obj:end_obj + 1]
+
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+
+    # Find first array
+    start_arr = text.find("[")
+    end_arr = text.rfind("]")
+
+    if start_arr >= 0 and end_arr > start_arr:
+
+        candidate = text[start_arr:end_arr + 1]
+
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+
+    return None
+
+
+# ============================================================
+# RECURSIVE RECORD EXTRACTION
+# ============================================================
+
+def recursive_records(obj):
+
+    records = []
 
     if isinstance(obj, list):
 
-        return obj
+        for item in obj:
 
-    if not isinstance(obj, dict):
+            if isinstance(item, dict):
 
-        return []
+                records.append(item)
 
-    preferred = [
+                records.extend(
+                    recursive_records(item)
+                )
 
-        "marketwatch",
-        "marketWatch",
-        "MarketWatch",
+            elif isinstance(item, list):
 
-        "data",
-        "Data",
+                records.extend(
+                    recursive_records(item)
+                )
 
-        "items",
-        "Items",
+        return records
 
-        "rows",
-        "Rows",
+    if isinstance(obj, dict):
 
-        "result",
-        "Result",
+        for value in obj.values():
 
-    ]
+            if isinstance(value, (list, dict)):
 
-    for key in preferred:
+                records.extend(
+                    recursive_records(value)
+                )
 
-        value = obj.get(key)
-
-        if (
-            isinstance(value, list)
-            and value
-        ):
-
-            return value
-
-    for value in obj.values():
-
-        if isinstance(
-            value,
-            dict
-        ):
-
-            result = extract_rows(
-                value,
-                depth + 1
-            )
-
-            if result:
-
-                return result
-
-        elif isinstance(
-            value,
-            list
-        ):
-
-            if value:
-
-                return value
-
-    return []
+    return records
 
 
 # ============================================================
-# NORMALIZE JSON ROW
+# SYMBOL NORMALIZATION
 # ============================================================
 
-def normalize_json_row(row):
+NAME_KEYS = [
+    "lVal18AFC",
+    "lVal18",
+    "symbol",
+    "Symbol",
+    "ticker",
+    "Ticker",
+    "shortName",
+    "shortname",
+    "name",
+    "Name",
+    "instrumentName",
+]
 
-    if not isinstance(
+FULL_NAME_KEYS = [
+    "lVal30",
+    "name",
+    "Name",
+    "instrumentName",
+    "companyName",
+]
+
+LAST_PRICE_KEYS = [
+    "pDrCotVal",
+    "lastPrice",
+    "last",
+    "price",
+    "close",
+    "Close",
+    "lastTradePrice",
+]
+
+YESTERDAY_KEYS = [
+    "priceYesterday",
+    "pClosing",
+    "yesterday",
+    "previousClose",
+    "prevClose",
+]
+
+HIGH_KEYS = [
+    "pMax",
+    "maxPrice",
+    "high",
+    "High",
+]
+
+LOW_KEYS = [
+    "pMin",
+    "minPrice",
+    "low",
+    "Low",
+]
+
+VOLUME_KEYS = [
+    "qTotTran5J",
+    "qTotVol",
+    "volume",
+    "Volume",
+    "tradeVolume",
+]
+
+VALUE_KEYS = [
+    "qTotCap",
+    "value",
+    "Value",
+    "tradeValue",
+]
+
+TRADE_COUNT_KEYS = [
+    "zTotTran",
+    "tradeCount",
+    "transactions",
+    "count",
+]
+
+
+def normalize_record(row):
+
+    if not isinstance(row, dict):
+        return None
+
+    symbol = find_first_text(
         row,
-        dict
-    ):
+        NAME_KEYS
+    )
 
+    full_name = find_first_text(
+        row,
+        FULL_NAME_KEYS
+    )
+
+    last_price = first_number(
+        row,
+        LAST_PRICE_KEYS
+    )
+
+    yesterday = first_number(
+        row,
+        YESTERDAY_KEYS
+    )
+
+    high = first_number(
+        row,
+        HIGH_KEYS
+    )
+
+    low = first_number(
+        row,
+        LOW_KEYS
+    )
+
+    volume = first_number(
+        row,
+        VOLUME_KEYS
+    )
+
+    value = first_number(
+        row,
+        VALUE_KEYS
+    )
+
+    trades = first_number(
+        row,
+        TRADE_COUNT_KEYS
+    )
+
+    # Need at least symbol + price
+    if not symbol or last_price is None:
         return None
 
-    # --------------------------------------------------------
-    # SYMBOL
-    # --------------------------------------------------------
+    if yesterday and yesterday > 0:
 
-    symbol = ""
-
-    for key in [
-
-        "lVal18AFC",
-        "symbol",
-        "Symbol",
-        "tseSymbol",
-        "TseSymbol",
-        "lVal18",
-        "insCode",
-        "InsCode",
-
-    ]:
-
-        value = row.get(key)
-
-        if value not in (
-            None,
-            ""
-        ):
-
-            symbol = str(
-                value
-            ).strip()
-
-            break
-
-    # --------------------------------------------------------
-    # NAME
-    # --------------------------------------------------------
-
-    name = ""
-
-    for key in [
-
-        "lVal30",
-        "name",
-        "Name",
-        "companyName",
-        "CompanyName",
-        "title",
-        "Title",
-
-    ]:
-
-        value = row.get(key)
-
-        if value not in (
-            None,
-            ""
-        ):
-
-            name = str(
-                value
-            ).strip()
-
-            break
-
-    # --------------------------------------------------------
-    # LAST PRICE
-    # --------------------------------------------------------
-
-    last = None
-
-    for key in [
-
-        "pl",
-        "pDrCotVal",
-        "last",
-        "lastPrice",
-        "Last",
-        "LastPrice",
-        "price",
-        "Price",
-
-    ]:
-
-        value = to_float(
-            row.get(key)
-        )
-
-        if value is not None:
-
-            last = value
-            break
-
-    # --------------------------------------------------------
-    # CLOSE
-    # --------------------------------------------------------
-
-    close = None
-
-    for key in [
-
-        "pc",
-        "pClosing",
-        "close",
-        "closePrice",
-        "Close",
-        "ClosePrice",
-
-    ]:
-
-        value = to_float(
-            row.get(key)
-        )
-
-        if value is not None:
-
-            close = value
-            break
-
-    # --------------------------------------------------------
-    # YESTERDAY
-    # --------------------------------------------------------
-
-    yesterday = None
-
-    for key in [
-
-        "py",
-        "priceYesterday",
-        "yesterday",
-        "yesterdayPrice",
-        "pClosingYesterday",
-
-    ]:
-
-        value = to_float(
-            row.get(key)
-        )
-
-        if value is not None:
-
-            yesterday = value
-            break
-
-    # --------------------------------------------------------
-    # VOLUME
-    # --------------------------------------------------------
-
-    volume = 0
-
-    for key in [
-
-        "qTotTran5J",
-        "volume",
-        "Volume",
-        "volumeTotal",
-        "vol",
-        "Vol",
-
-    ]:
-
-        value = to_float(
-            row.get(key)
-        )
-
-        if value is not None:
-
-            volume = value
-            break
-
-    # --------------------------------------------------------
-    # FALLBACK
-    # --------------------------------------------------------
-
-    if last is None:
-
-        last = close
-
-    if close is None:
-
-        close = last
-
-    if last is None:
-        return None
-
-    if last <= 0:
-        return None
-
-    # --------------------------------------------------------
-    # CHANGE
-    # --------------------------------------------------------
-
-    pct = 0.0
-
-    if (
-        yesterday is not None
-        and yesterday > 0
-    ):
-
-        pct = (
-            (last - yesterday)
+        change_pct = (
+            (last_price - yesterday)
             / yesterday
-        ) * 100
+            * 100
+        )
+
+    else:
+
+        change_pct = first_number(
+            row,
+            [
+                "percent",
+                "changePercent",
+                "priceChangePercent",
+                "xVarPClosing",
+            ]
+        )
+
+    if change_pct is None:
+        change_pct = 0.0
 
     return {
-
         "symbol": symbol,
-
-        "name": (
-            name
-            or symbol
-        ),
-
-        "last": last,
-
-        "close": close,
-
-        "yesterday": yesterday,
-
-        "volume": volume,
-
-        "pct": pct,
-
+        "name": full_name or symbol,
+        "last": last_price,
+        "yesterday": yesterday or 0,
+        "high": high or 0,
+        "low": low or 0,
+        "volume": volume or 0,
+        "value": value or 0,
+        "trades": trades or 0,
+        "change_pct": change_pct,
     }
 
 
 # ============================================================
-# FETCH JSON SOURCE
+# MARKET DATA PARSER
 # ============================================================
 
-def fetch_json_source(
-    source_name,
-    url
-):
+def parse_market_data(data):
 
-    print()
-    print(
-        "🔎 SOURCE:",
-        source_name
-    )
+    if data is None:
+        return []
 
-    print(
-        "🌐",
-        url
-    )
+    rows = recursive_records(data)
+
+    result = []
+
+    seen = set()
+
+    for row in rows:
+
+        item = normalize_record(row)
+
+        if not item:
+            continue
+
+        symbol = item["symbol"]
+
+        if symbol in seen:
+            continue
+
+        seen.add(symbol)
+
+        result.append(item)
+
+    # Sometimes source has direct list
+    if not result and isinstance(data, list):
+
+        for row in data:
+
+            item = normalize_record(row)
+
+            if item:
+
+                symbol = item["symbol"]
+
+                if symbol not in seen:
+
+                    seen.add(symbol)
+                    result.append(item)
+
+    return result
+
+
+# ============================================================
+# DIRECT FETCH
+# ============================================================
+
+def fetch_direct(url):
 
     try:
 
-        status, content_type, data = (
-            http_get(url)
+        r = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=TIMEOUT,
+            allow_redirects=True,
         )
 
-        print(
-            "📡 HTTP:",
-            status
-        )
+        if not r.ok:
 
-        print(
-            "📦 CONTENT:",
-            content_type
-        )
-
-        if status != 200:
-
-            return [], (
-                f"{source_name}: "
-                f"HTTP {status}"
+            return None, (
+                f"HTTP {r.status_code}"
             )
 
-        if not data:
+        content_type = (
+            r.headers.get(
+                "content-type",
+                ""
+            ).lower()
+        )
 
-            return [], (
-                f"{source_name}: "
-                f"EMPTY RESPONSE"
-            )
-
-        text = data.decode(
-            "utf-8",
-            errors="replace"
-        ).strip()
-
-        # ----------------------------------------------------
-        # BLOCK DETECTION
-        # ----------------------------------------------------
-
-        low = text.lower()
-
+        # JSON
         if (
-            "دسترسی شما" in text
-            or "مسدود" in text
-            or "general error" in low
+            "json" in content_type
+            or r.text.lstrip().startswith("{")
+            or r.text.lstrip().startswith("[")
         ):
 
-            return [], (
-                f"{source_name}: "
-                "TSETMC BLOCKED RESPONSE"
-            )
+            try:
+                data = r.json()
 
-        # ----------------------------------------------------
-        # JSON
-        # ----------------------------------------------------
+                return data, "OK"
 
-        try:
+            except Exception:
+                pass
 
-            obj = json.loads(
-                text
-            )
+        # Excel / binary
+        if (
+            "excel" in content_type
+            or "spreadsheet" in content_type
+            or url.lower().endswith(".aspx")
+        ):
 
-        except Exception:
+            return r.content, "BINARY"
 
-            return [], (
-                f"{source_name}: "
-                "NON-JSON RESPONSE"
-            )
+        return r.text, "TEXT"
 
-        rows = extract_rows(
-            obj
-        )
+    except requests.exceptions.Timeout:
 
-        print(
-            "📊 RAW ROWS:",
-            len(rows)
-        )
+        return None, "TIMEOUT"
 
-        result = []
+    except requests.exceptions.ConnectionError as e:
 
-        seen = set()
-
-        for row in rows:
-
-            item = normalize_json_row(
-                row
-            )
-
-            if not item:
-                continue
-
-            key = (
-                item["symbol"]
-                or item["name"]
-            ).strip()
-
-            if not key:
-                continue
-
-            if key in seen:
-                continue
-
-            seen.add(key)
-
-            result.append(
-                item
-            )
-
-        print(
-            "✅ VALID:",
-            len(result)
-        )
-
-        if result:
-
-            return result, None
-
-        return [], (
-            f"{source_name}: "
-            "NO USABLE ROWS"
+        return None, (
+            f"CONNECTION ERROR: {str(e)[:120]}"
         )
 
     except Exception as e:
 
-        return [], (
-            f"{source_name}: "
-            f"{e}"
+        return None, (
+            f"ERROR: {str(e)[:120]}"
+        )
+
+
+# ============================================================
+# JINA FETCH
+# ============================================================
+
+def fetch_jina(url):
+
+    try:
+
+        r = requests.get(
+            url,
+            headers=JINA_HEADERS,
+            timeout=TIMEOUT + 10,
+            allow_redirects=True,
+        )
+
+        if not r.ok:
+
+            return None, (
+                f"HTTP {r.status_code}"
+            )
+
+        raw = r.text
+
+        # Jina JSON response
+        try:
+
+            wrapper = r.json()
+
+            if isinstance(wrapper, dict):
+
+                data = wrapper.get(
+                    "data"
+                )
+
+                if isinstance(data, dict):
+
+                    content = data.get(
+                        "content"
+                    )
+
+                    if content:
+
+                        parsed = (
+                            extract_json_from_text(
+                                content
+                            )
+                        )
+
+                        if parsed is not None:
+                            return parsed, "OK"
+
+                        return content, "TEXT"
+
+        except Exception:
+            pass
+
+        # Plain response
+        parsed = extract_json_from_text(raw)
+
+        if parsed is not None:
+
+            return parsed, "OK"
+
+        return raw, "TEXT"
+
+    except requests.exceptions.Timeout:
+
+        return None, "TIMEOUT"
+
+    except requests.exceptions.ConnectionError as e:
+
+        return None, (
+            f"CONNECTION ERROR: {str(e)[:120]}"
+        )
+
+    except Exception as e:
+
+        return None, (
+            f"ERROR: {str(e)[:120]}"
         )
 
 
@@ -766,414 +717,266 @@ def fetch_json_source(
 # EXCEL PARSER
 # ============================================================
 
-def parse_excel_bytes(data):
+def parse_excel_bytes(content):
 
-    # --------------------------------------------------------
-    # Try openpyxl
-    # --------------------------------------------------------
+    """
+    Optional parser.
+
+    Uses pandas only if available.
+    GitHub Actions usually can install it if needed,
+    but this bot does NOT require pandas for JSON/JINA.
+    """
+
+    if not isinstance(content, (bytes, bytearray)):
+        return []
 
     try:
 
-        from openpyxl import (
-            load_workbook
+        import io
+        import pandas as pd
+
+        sheets = pd.read_excel(
+            io.BytesIO(content),
+            sheet_name=None,
+            header=None,
         )
-
-        workbook = load_workbook(
-            filename=io.BytesIO(data),
-            read_only=True,
-            data_only=True
-        )
-
-        sheet = workbook.active
-
-        rows = list(
-            sheet.iter_rows(
-                values_only=True
-            )
-        )
-
-        if not rows:
-
-            return []
-
-        # Find first non-empty row
-        header_index = None
-
-        for i, row in enumerate(
-            rows[:20]
-        ):
-
-            values = [
-                str(x).strip()
-                if x is not None
-                else ""
-                for x in row
-            ]
-
-            joined = " ".join(
-                values
-            )
-
-            if (
-                "نماد" in joined
-                or "Symbol" in joined
-                or "آخرین" in joined
-            ):
-
-                header_index = i
-                break
-
-        if header_index is None:
-
-            header_index = 0
-
-        headers = [
-            str(x).strip()
-            if x is not None
-            else ""
-            for x in rows[
-                header_index
-            ]
-        ]
 
         result = []
 
-        for row in rows[
-            header_index + 1:
-        ]:
+        for _, df in sheets.items():
 
-            record = {}
+            for _, row in df.iterrows():
 
-            for i, value in enumerate(
-                row
-            ):
+                values = list(row.values)
 
-                if i < len(headers):
+                if not values:
+                    continue
 
-                    key = headers[i]
+                # Try to identify a symbol and prices
+                text_values = [
+                    str(x)
+                    for x in values
+                    if x is not None
+                    and str(x) != "nan"
+                ]
 
-                    if key:
+                if not text_values:
+                    continue
 
-                        record[key] = value
+                symbol = ""
 
-            if record:
+                for value in text_values:
+
+                    if (
+                        len(value) <= 20
+                        and not value.replace(
+                            ".", "", 1
+                        ).isdigit()
+                    ):
+
+                        symbol = value
+                        break
+
+                if not symbol:
+                    continue
+
+                numbers = []
+
+                for value in values:
+
+                    n = clean_number(value)
+
+                    if n is not None:
+                        numbers.append(n)
+
+                if not numbers:
+                    continue
+
+                last = numbers[0]
 
                 result.append(
-                    record
+                    {
+                        "symbol": symbol,
+                        "name": symbol,
+                        "last": last,
+                        "yesterday": 0,
+                        "high": 0,
+                        "low": 0,
+                        "volume": 0,
+                        "value": 0,
+                        "trades": 0,
+                        "change_pct": 0,
+                    }
                 )
 
-        return normalize_excel_records(
-            result
-        )
+        return result
 
-    except ImportError:
-
-        raise RuntimeError(
-            "OPENPYXL NOT INSTALLED"
-        )
-
-    except Exception as e:
-
-        raise RuntimeError(
-            f"EXCEL PARSE ERROR: {e}"
-        )
+    except Exception:
+        return []
 
 
 # ============================================================
-# NORMALIZE EXCEL
+# SOURCE RUNNER
 # ============================================================
 
-def normalize_excel_records(
-    records
+def try_source(
+    name,
+    url,
+    is_jina=False,
 ):
 
-    result = []
+    if is_jina:
 
-    for row in records:
+        data, status = fetch_jina(url)
 
-        if not isinstance(
-            row,
-            dict
-        ):
+    else:
 
-            continue
+        data, status = fetch_direct(url)
 
-        symbol = ""
-        name = ""
+    if data is None:
 
-        last = None
-        close = None
-        yesterday = None
-        volume = 0
+        return [], status
 
-        for key, value in row.items():
+    # Excel
+    if isinstance(data, (bytes, bytearray)):
 
-            k = str(
-                key
-            ).strip().lower()
+        rows = parse_excel_bytes(data)
 
-            # symbol
-            if (
-                not symbol
-                and (
-                    "نماد" in k
-                    or "symbol" in k
-                )
-            ):
+        if rows:
 
-                symbol = str(
-                    value or ""
-                ).strip()
+            return rows, "OK"
 
-            # name
-            if (
-                not name
-                and (
-                    "نام" in k
-                    or "name" in k
-                )
-            ):
+        return [], "EXCEL PARSE FAILED"
 
-                name = str(
-                    value or ""
-                ).strip()
+    rows = parse_market_data(data)
 
-            # last
-            if last is None and (
-                "آخرین" in k
-                or "last" in k
-                or "قیمت" in k
-            ):
+    if rows:
 
-                last = to_float(
-                    value
+        return rows, f"OK ({len(rows)} rows)"
+
+    # If Jina returned text, try JSON again
+    if isinstance(data, str):
+
+        parsed = extract_json_from_text(data)
+
+        if parsed is not None:
+
+            rows = parse_market_data(parsed)
+
+            if rows:
+
+                return rows, (
+                    f"OK ({len(rows)} rows)"
                 )
 
-            # close
-            if close is None and (
-                "پایانی" in k
-                or "close" in k
-            ):
-
-                close = to_float(
-                    value
-                )
-
-            # yesterday
-            if yesterday is None and (
-                "دیروز" in k
-                or "yesterday" in k
-            ):
-
-                yesterday = to_float(
-                    value
-                )
-
-            # volume
-            if (
-                volume == 0
-                and (
-                    "حجم" in k
-                    or "volume" in k
-                )
-            ):
-
-                volume = (
-                    to_float(value)
-                    or 0
-                )
-
-        if last is None:
-
-            last = close
-
-        if close is None:
-
-            close = last
-
-        if last is None:
-            continue
-
-        if last <= 0:
-            continue
-
-        pct = 0.0
-
-        if (
-            yesterday
-            and yesterday > 0
-        ):
-
-            pct = (
-                (last - yesterday)
-                / yesterday
-            ) * 100
-
-        result.append({
-
-            "symbol": symbol,
-
-            "name": (
-                name
-                or symbol
-            ),
-
-            "last": last,
-
-            "close": close,
-
-            "yesterday": yesterday,
-
-            "volume": volume,
-
-            "pct": pct,
-
-        })
-
-    return result
+    return [], "NO VALID MARKET ROWS"
 
 
 # ============================================================
-# FETCH EXCEL
+# MARKET FETCH
 # ============================================================
 
-def fetch_excel_source(
-    source_name,
-    url
-):
+def get_market():
 
-    print()
-    print(
-        "🔎 EXCEL SOURCE:",
-        source_name
-    )
-
-    try:
-
-        status, content_type, data = (
-            http_get(url)
-        )
-
-        print(
-            "📡 HTTP:",
-            status
-        )
-
-        print(
-            "📦 BYTES:",
-            len(data)
-        )
-
-        if status != 200:
-
-            return [], (
-                f"{source_name}: "
-                f"HTTP {status}"
-            )
-
-        if not data:
-
-            return [], (
-                f"{source_name}: "
-                "EMPTY RESPONSE"
-            )
-
-        result = parse_excel_bytes(
-            data
-        )
-
-        print(
-            "✅ EXCEL VALID:",
-            len(result)
-        )
-
-        if result:
-
-            return result, None
-
-        return [], (
-            f"{source_name}: "
-            "NO USABLE EXCEL ROWS"
-        )
-
-    except Exception as e:
-
-        return [], (
-            f"{source_name}: {e}"
-        )
-
-
-# ============================================================
-# FETCH MARKET
-# ============================================================
-
-def fetch_market():
-
-    errors = []
+    diagnostics = []
 
     # --------------------------------------------------------
-    # JSON SOURCES
+    # 1. JINA SOURCES FIRST
     # --------------------------------------------------------
 
-    for source_name, url in JSON_SOURCES:
+    for name, url in JINA_SOURCES:
 
-        rows, error = (
-            fetch_json_source(
-                source_name,
-                url
-            )
+        rows, status = try_source(
+            name,
+            url,
+            is_jina=True,
+        )
+
+        diagnostics.append(
+            f"• {name}: {status}"
         )
 
         if rows:
 
-            return (
-                source_name,
-                rows,
-                errors
-            )
+            return rows, diagnostics, name
 
-        if error:
-
-            errors.append(
-                error
-            )
-
+        # Avoid hammering the sources
         time.sleep(1)
 
     # --------------------------------------------------------
-    # EXCEL SOURCES
+    # 2. DIRECT SOURCES
     # --------------------------------------------------------
 
-    for source_name, url in EXCEL_SOURCES:
+    for name, url in DIRECT_SOURCES:
 
-        rows, error = (
-            fetch_excel_source(
-                source_name,
-                url
-            )
+        rows, status = try_source(
+            name,
+            url,
+            is_jina=False,
+        )
+
+        diagnostics.append(
+            f"• {name}: {status}"
         )
 
         if rows:
 
-            return (
-                source_name,
-                rows,
-                errors
-            )
-
-        if error:
-
-            errors.append(
-                error
-            )
+            return rows, diagnostics, name
 
         time.sleep(1)
 
-    return (
-        None,
-        [],
-        errors
+    return [], diagnostics, ""
+
+
+# ============================================================
+# FILTERS
+# ============================================================
+
+def is_valid_stock(item):
+
+    symbol = item.get(
+        "symbol",
+        ""
+    ).strip()
+
+    if not symbol:
+        return False
+
+    if len(symbol) > 30:
+        return False
+
+    last = item.get(
+        "last",
+        0
     )
+
+    if last <= 0:
+        return False
+
+    # Ignore obvious index rows
+    bad_words = [
+        "شاخص",
+        "index",
+        "کل",
+        "هم وزن",
+        "هم‌وزن",
+    ]
+
+    text = (
+        symbol.lower()
+        + " "
+        + item.get(
+            "name",
+            ""
+        ).lower()
+    )
+
+    for word in bad_words:
+
+        if word.lower() in text:
+            return False
+
+    return True
 
 
 # ============================================================
@@ -1182,8 +985,10 @@ def fetch_market():
 
 def score_stock(item):
 
-    pct = item.get(
-        "pct",
+    score = 0.0
+
+    change = item.get(
+        "change_pct",
         0
     )
 
@@ -1192,265 +997,187 @@ def score_stock(item):
         0
     )
 
-    score = 0
-
-    # Momentum
-    if pct >= 5:
-        score += 6
-
-    elif pct >= 4:
-        score += 5
-
-    elif pct >= 3:
-        score += 4
-
-    elif pct >= 2:
-        score += 3
-
-    elif pct >= 1:
-        score += 2
-
-    elif pct > 0:
-        score += 1
-
-    # Strong negative
-    if pct <= -5:
-
-        score -= 4
-
-    elif pct <= -3:
-
-        score -= 2
-
-    # Volume
-    if volume >= 50_000_000:
-
-        score += 3
-
-    elif volume >= 10_000_000:
-
-        score += 2
-
-    elif volume >= 1_000_000:
-
-        score += 1
-
-    return score
-
-
-# ============================================================
-# SELECT CANDIDATES
-# ============================================================
-
-def select_candidates(rows):
-
-    valid = []
-
-    seen = set()
-
-    for item in rows:
-
-        symbol = str(
-            item.get(
-                "symbol",
-                ""
-            )
-        ).strip()
-
-        name = str(
-            item.get(
-                "name",
-                ""
-            )
-        ).strip()
-
-        if not symbol and not name:
-            continue
-
-        key = (
-            symbol
-            or name
-        )
-
-        if key in seen:
-            continue
-
-        seen.add(key)
-
-        text = (
-            f"{symbol} {name}"
-            .lower()
-        )
-
-        # Skip indexes
-        if "شاخص" in text:
-            continue
-
-        if "index" in text:
-            continue
-
-        item["score"] = (
-            score_stock(item)
-        )
-
-        valid.append(
-            item
-        )
-
-    valid.sort(
-        key=lambda x: (
-            x.get(
-                "score",
-                0
-            ),
-            x.get(
-                "pct",
-                0
-            ),
-            x.get(
-                "volume",
-                0
-            ),
-        ),
-        reverse=True
+    value = item.get(
+        "value",
+        0
     )
 
-    return valid[
-        :MAX_SYMBOLS
-    ]
+    trades = item.get(
+        "trades",
+        0
+    )
 
+    # Momentum
+    if change >= 4:
+        score += 40
 
-# ============================================================
-# PRICE FORMAT
-# ============================================================
+    elif change >= 3:
+        score += 34
 
-def format_price(value):
+    elif change >= 2:
+        score += 28
 
-    if value is None:
+    elif change >= 1:
+        score += 18
 
-        return "-"
+    elif change > 0:
+        score += 8
 
-    try:
+    elif change < -4:
+        score -= 30
 
-        if abs(value) >= 1000:
+    elif change < -2:
+        score -= 20
 
-            return f"{value:,.0f}"
+    elif change < 0:
+        score -= 8
 
-        if abs(value) >= 1:
+    # Volume
+    if volume > 0:
 
-            return (
-                f"{value:,.2f}"
-                .rstrip("0")
-                .rstrip(".")
-            )
+        if volume >= 10_000_000:
+            score += 20
 
-        return (
-            f"{value:.6f}"
-            .rstrip("0")
-            .rstrip(".")
-        )
+        elif volume >= 1_000_000:
+            score += 14
 
-    except Exception:
+        elif volume >= 100_000:
+            score += 8
 
-        return str(value)
+        else:
+            score += 3
+
+    # Value
+    if value > 0:
+
+        if value >= 100_000_000_000:
+            score += 20
+
+        elif value >= 10_000_000_000:
+            score += 14
+
+        elif value >= 1_000_000_000:
+            score += 8
+
+    # Number of trades
+    if trades > 10_000:
+        score += 10
+
+    elif trades > 2_000:
+        score += 7
+
+    elif trades > 500:
+        score += 4
+
+    return score
 
 
 # ============================================================
 # REPORT
 # ============================================================
 
-def build_report(
-    source,
-    candidates,
-    total
+def make_report(
+    rows,
+    source_name,
 ):
 
-    lines = [
-
-        "💓 ATI BOURSE ALIVE",
-
-        f"⚡ {BOT_VERSION}",
-
-        "📊 بورس ایران",
-
-        "🔑 BRS_API_KEY: NOT REQUIRED",
-
-        "🔒 REAL TRADING: OFF",
-
-        f"🕐 {now_utc()}",
-
-        "",
-
-        f"✅ DATA SOURCE: {source}",
-
-        f"📈 RAW MARKET ROWS: {total}",
-
-        f"📊 VALID SYMBOLS: {len(candidates)}",
-
-        "",
-
-        "🔥 TOP MARKET MOMENTUM",
-
-        "",
+    valid = [
+        x
+        for x in rows
+        if is_valid_stock(x)
     ]
 
-    top = candidates[:10]
+    for item in valid:
 
-    for i, item in enumerate(
-        top,
-        1
-    ):
+        item["score"] = score_stock(item)
 
-        symbol = (
-            item.get(
-                "symbol"
-            )
-            or item.get(
-                "name"
-            )
-            or "-"
-        )
+    valid.sort(
+        key=lambda x: (
+            x["score"],
+            x["change_pct"],
+        ),
+        reverse=True,
+    )
 
-        pct = item.get(
-            "pct",
-            0
-        )
+    top = valid[:10]
 
-        score = item.get(
-            "score",
-            0
-        )
+    now = datetime.now(
+        timezone.utc
+    ).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
 
-        price = format_price(
-            item.get(
-                "last"
-            )
-        )
+    lines = []
 
-        sign = (
-            "+"
-            if pct >= 0
-            else ""
-        )
+    lines.append(
+        "💓 ATI BOURSE ALIVE"
+    )
+
+    lines.append(
+        f"⚡ {BOT_VERSION}"
+    )
+
+    lines.append(
+        "📊 بورس و فرابورس ایران"
+    )
+
+    lines.append(
+        "🔒 REAL TRADING: OFF"
+    )
+
+    lines.append(
+        f"📡 SOURCE: {source_name}"
+    )
+
+    lines.append(
+        f"📈 VALID SYMBOLS: {len(valid)}"
+    )
+
+    lines.append("")
+
+    if not top:
 
         lines.append(
-            f"{i}️⃣ {symbol}\n"
-            f"   💰 {price}"
-            f" | 📊 {sign}{pct:.2f}%"
-            f" | ⭐ {score}"
+            "⚠️ نماد معتبر برای تحلیل پیدا نشد."
         )
 
-    lines.extend([
+    else:
 
-        "",
+        lines.append(
+            "🔥 برترین نمادهای صعودی:"
+        )
 
-        "⚠️ این نسخه فقط داده بازار را می‌خواند.",
+        for i, item in enumerate(
+            top,
+            start=1
+        ):
 
-        "🚫 هیچ سفارش خرید/فروشی ارسال نمی‌شود.",
+            symbol = item["symbol"]
 
-        "🔑 BRS_API_KEY لازم نیست.",
+            change = item[
+                "change_pct"
+            ]
 
-    ])
+            price = item["last"]
+
+            score = item["score"]
+
+            lines.append(
+                f"{i}️⃣ {symbol} | "
+                f"💰 {price:,.0f} | "
+                f"📈 {change:+.2f}% | "
+                f"⭐ {score:.0f}"
+            )
+
+    lines.append("")
+
+    lines.append(
+        "⚠️ این خروجی سیگنال قطعی خرید نیست."
+    )
+
+    lines.append(
+        f"🕐 {now}"
+    )
 
     return "\n".join(lines)
 
@@ -1459,51 +1186,58 @@ def build_report(
 # ERROR REPORT
 # ============================================================
 
-def build_error_report(errors):
+def make_error_report(
+    diagnostics
+):
 
-    lines = [
+    now = datetime.now(
+        timezone.utc
+    ).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
 
-        "❌ ATI BOURSE ERROR",
+    lines = []
 
-        "",
+    lines.append(
+        "❌ ATI BOURSE ERROR"
+    )
 
-        "هیچ داده عمومی معتبری از بازار دریافت نشد.",
+    lines.append("")
 
-        "",
+    lines.append(
+        "هیچ داده عمومی معتبری از بازار دریافت نشد."
+    )
 
-        "🔑 BRS_API_KEY لازم نیست.",
+    lines.append("")
 
-        "🔒 REAL TRADING: OFF",
+    lines.append(
+        "🔑 BRS_API_KEY استفاده نمی‌شود."
+    )
 
-        "",
+    lines.append(
+        "🔒 REAL TRADING: OFF"
+    )
 
-        "📋 DIAGNOSTIC:",
+    lines.append("")
 
-    ]
+    lines.append(
+        "📋 DIAGNOSTIC:"
+    )
 
-    if errors:
+    lines.extend(
+        diagnostics
+    )
 
-        for error in errors:
+    lines.append("")
 
-            lines.append(
-                f"• {error}"
-            )
+    lines.append(
+        "🔁 نسخه V3 ابتدا JINA → TSETMC "
+        "و سپس TSETMC مستقیم را امتحان کرد."
+    )
 
-    else:
-
-        lines.append(
-            "• UNKNOWN ERROR"
-        )
-
-    lines.extend([
-
-        "",
-
-        "💡 نسخه V2.4 چند مسیر عمومی TSETMC را امتحان کرد.",
-
-        f"🕐 {now_utc()}",
-
-    ])
+    lines.append(
+        "🕐 " + now
+    )
 
     return "\n".join(lines)
 
@@ -1514,89 +1248,51 @@ def build_error_report(errors):
 
 def main():
 
-    print("=" * 65)
+    print(
+        "========================================"
+    )
 
     print(
         f"ATI BOURSE {BOT_VERSION}"
     )
 
     print(
-        "🔑 BRS_API_KEY: NOT REQUIRED"
+        "BRS_API_KEY: NOT USED"
     )
 
     print(
-        "🔒 REAL TRADING: OFF"
+        "REAL TRADING: OFF"
     )
 
     print(
-        f"🕐 {now_utc()}"
+        "========================================"
     )
 
-    print("=" * 65)
-
-    source, rows, errors = (
-        fetch_market()
+    rows, diagnostics, source = (
+        get_market()
     )
-
-    # --------------------------------------------------------
-    # ERROR
-    # --------------------------------------------------------
 
     if not rows:
 
-        report = (
-            build_error_report(
-                errors
-            )
+        message = make_error_report(
+            diagnostics
         )
 
-        print()
-        print(report)
-        print()
+        print(message)
 
-        telegram_send(
-            report
-        )
+        telegram_send(message)
 
-        return 0
+        return
 
-    # --------------------------------------------------------
-    # CANDIDATES
-    # --------------------------------------------------------
-
-    candidates = (
-        select_candidates(
-            rows
-        )
-    )
-
-    # --------------------------------------------------------
-    # REPORT
-    # --------------------------------------------------------
-
-    report = build_report(
+    message = make_report(
+        rows,
         source,
-        candidates,
-        len(rows)
     )
 
-    print()
-    print(report)
-    print()
+    print(message)
 
-    telegram_send(
-        report
-    )
+    telegram_send(message)
 
-    return 0
-
-
-# ============================================================
-# START
-# ============================================================
 
 if __name__ == "__main__":
-
-    raise SystemExit(
-        main()
-    )
+    main()
