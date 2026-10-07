@@ -1,114 +1,65 @@
 # ============================================================
-# ATI BOURSE BOT V3
+# ATI BOURSE BOT V4
+# Public market-data scanner
 # NO BRS_API_KEY
-# TSETMC + JINA READER FALLBACK
-# READ-ONLY / NO REAL TRADING
+# REAL TRADING = OFF
 # ============================================================
 
 import os
-import re
+import io
+import csv
 import json
 import time
+import math
+import statistics
 from datetime import datetime, timezone
-from urllib.parse import quote
 
 import requests
 
 
-# ============================================================
+# ------------------------------------------------------------
 # CONFIG
-# ============================================================
+# ------------------------------------------------------------
 
-BOT_VERSION = "ATI-BOURSE-V3-NO-APIKEY-JINA"
+VERSION = "ATI-BOURSE-V4.0"
 
 REAL_TRADING = False
+BRS_API_KEY = ""
 
-TIMEOUT = 25
-MAX_SYMBOLS = 80
+TIMEOUT = 12
+RETRIES = 2
 
-TELEGRAM_TOKEN = (
-    os.getenv("BOURSE_TELEGRAM_BOT_TOKEN")
-    or os.getenv("TELEGRAM_BOT_TOKEN")
-    or ""
-)
-
-TELEGRAM_CHAT_ID = (
-    os.getenv("BOURSE_TELEGRAM_CHAT_ID")
-    or os.getenv("TELEGRAM_CHAT_ID")
-    or ""
-)
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 
-# ============================================================
-# HEADERS
-# ============================================================
+# ------------------------------------------------------------
+# HTTP SESSION
+# ------------------------------------------------------------
 
-HEADERS = {
+SESSION = requests.Session()
+
+SESSION.headers.update({
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 Chrome/130.0 Safari/537.36"
+        "AppleWebKit/537.36 Chrome/140 Safari/537.36"
     ),
     "Accept": "*/*",
-    "Connection": "close",
-}
+    "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
+    "Connection": "keep-alive",
+})
 
 
-JINA_HEADERS = {
-    "User-Agent": "ATI-Bourse-Bot/3.0",
-    "Accept": "application/json",
-    "X-No-Cache": "true",
-    "X-Engine": "direct",
-}
-
-
-# ============================================================
-# TSETMC SOURCES
-# ============================================================
-
-DIRECT_SOURCES = [
-    (
-        "TSETMC CDN MarketWatch",
-        "https://cdn.tsetmc.com/api/MarketWatch"
-    ),
-    (
-        "TSETMC CDN GetMarketWatch",
-        "https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch"
-    ),
-    (
-        "TSETMC Legacy MarketWatch",
-        "https://old.tsetmc.com/tsev2/excel/MarketWatchPlus.aspx?d=0"
-    ),
-]
-
-
-# JINA PROXY SOURCES
-JINA_SOURCES = [
-    (
-        "JINA -> TSETMC CDN MarketWatch",
-        "https://r.jina.ai/https://cdn.tsetmc.com/api/MarketWatch"
-    ),
-    (
-        "JINA -> TSETMC GetMarketWatch",
-        "https://r.jina.ai/https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch"
-    ),
-    (
-        "JINA -> TSETMC Legacy MarketWatch",
-        "https://r.jina.ai/http://old.tsetmc.com/tsev2/excel/MarketWatchPlus.aspx?d=0"
-    ),
-]
-
-
-# ============================================================
+# ------------------------------------------------------------
 # TELEGRAM
-# ============================================================
+# ------------------------------------------------------------
 
 def telegram_send(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("⚠️ Telegram credentials not configured")
         return False
 
-    url = (
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    )
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -117,1182 +68,765 @@ def telegram_send(text):
     }
 
     try:
-        r = requests.post(
-            url,
-            json=payload,
-            timeout=20,
-        )
+        r = SESSION.post(url, json=payload, timeout=15)
 
-        return r.ok
+        if r.ok:
+            return True
 
-    except Exception:
+        print("Telegram error:", r.status_code, r.text[:300])
+        return False
+
+    except Exception as e:
+        print("Telegram exception:", repr(e))
         return False
 
 
-# ============================================================
-# NUMBER HELPERS
-# ============================================================
+# ------------------------------------------------------------
+# SAFE REQUEST
+# ------------------------------------------------------------
 
-def clean_number(value):
+def http_get(url, params=None, headers=None, timeout=TIMEOUT):
 
-    if value is None:
-        return None
+    last_error = ""
 
-    if isinstance(value, bool):
-        return None
+    for attempt in range(RETRIES + 1):
 
-    if isinstance(value, (int, float)):
         try:
-            return float(value)
-        except Exception:
-            return None
 
-    text = str(value).strip()
+            r = SESSION.get(
+                url,
+                params=params,
+                headers=headers,
+                timeout=timeout,
+            )
 
-    if not text:
-        return None
+            if r.status_code == 200 and r.content:
 
-    text = (
-        text.replace(",", "")
-        .replace("٬", "")
-        .replace("،", "")
-        .replace("%", "")
-        .strip()
-    )
+                return r
 
-    # Persian / Arabic digits
-    trans = str.maketrans(
-        "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
-        "01234567890123456789"
-    )
+            last_error = f"HTTP {r.status_code}"
 
-    text = text.translate(trans)
+        except requests.exceptions.Timeout:
+            last_error = "TIMEOUT"
 
-    try:
-        return float(text)
-    except Exception:
-        return None
+        except requests.exceptions.ConnectionError as e:
+            last_error = f"CONNECTION ERROR: {e}"
 
+        except Exception as e:
+            last_error = f"ERROR: {e}"
 
-def first_number(obj, keys):
-
-    if not isinstance(obj, dict):
-        return None
-
-    lower = {
-        str(k).lower(): v
-        for k, v in obj.items()
-    }
-
-    for key in keys:
-
-        if key.lower() in lower:
-            value = clean_number(lower[key.lower()])
-
-            if value is not None:
-                return value
+        if attempt < RETRIES:
+            time.sleep(1)
 
     return None
 
 
-# ============================================================
-# TEXT HELPERS
-# ============================================================
+# ------------------------------------------------------------
+# SOURCE 1
+# TSETMC CDN MARKETWATCH
+# ------------------------------------------------------------
 
-def clean_text(value):
+def source_tsetmc_cdn():
 
-    if value is None:
-        return ""
+    diagnostics = []
 
-    return str(value).strip()
+    urls = [
+        "https://cdn.tsetmc.com/api/MarketData/GetMarketWatch",
+        "https://cdn.tsetmc.com/api/MarketData/GetMarketWatch?market=0",
+    ]
+
+    for url in urls:
+
+        r = http_get(url)
+
+        if r is None:
+            diagnostics.append(f"CDN {url}: FAILED")
+            continue
+
+        try:
+
+            data = r.json()
+
+            if data:
+                return data, "TSETMC-CDN", diagnostics
+
+            diagnostics.append(
+                f"CDN {url}: EMPTY"
+            )
+
+        except Exception as e:
+
+            diagnostics.append(
+                f"CDN {url}: JSON ERROR {e}"
+            )
+
+    return None, None, diagnostics
 
 
-def find_first_text(obj, keys):
+# ------------------------------------------------------------
+# SOURCE 2
+# OLD TSETMC MARKETWATCHPLUS
+# ------------------------------------------------------------
 
-    if not isinstance(obj, dict):
-        return ""
+def source_marketwatch_plus():
 
-    lower = {
-        str(k).lower(): v
-        for k, v in obj.items()
-    }
+    diagnostics = []
 
-    for key in keys:
+    urls = [
+        "https://old.tsetmc.com/tsev2/excel/MarketWatchPlus.aspx?d=0",
+        "https://old.tsetmc.com/tsev2/excel/MarketWatchPlus.aspx?d=0&format=0",
+    ]
 
-        if key.lower() in lower:
+    for url in urls:
 
-            value = lower[key.lower()]
+        r = http_get(url, timeout=15)
 
-            if isinstance(value, str):
-                value = value.strip()
+        if r is None:
+            diagnostics.append(
+                f"MarketWatchPlus {url}: FAILED"
+            )
+            continue
 
-                if value:
-                    return value
+        content_type = r.headers.get(
+            "content-type",
+            ""
+        ).lower()
 
-    return ""
+        data = r.content
+
+        # XLS / XLSX signature
+        if (
+            data.startswith(b"PK")
+            or data.startswith(b"\xd0\xcf\x11\xe0")
+            or "excel" in content_type
+            or "spreadsheet" in content_type
+        ):
+
+            return data, "TSETMC-MARKETWATCHPLUS", diagnostics
+
+        diagnostics.append(
+            f"MarketWatchPlus {url}: INVALID FILE"
+        )
+
+    return None, None, diagnostics
 
 
-# ============================================================
-# JSON EXTRACTION
-# ============================================================
+# ------------------------------------------------------------
+# SOURCE 3
+# JINA READER
+# ------------------------------------------------------------
 
-def extract_json_from_text(text):
+def source_jina(url):
 
-    if not text:
+    jina_url = "https://r.jina.ai/" + url
+
+    r = http_get(
+        jina_url,
+        timeout=20,
+    )
+
+    if r is None:
         return None
 
-    text = text.strip()
-
-    # Direct JSON
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-
-    # Markdown code block
-    text2 = re.sub(
-        r"^```(?:json)?\s*",
-        "",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    text2 = re.sub(
-        r"\s*```$",
-        "",
-        text2
-    )
-
-    try:
-        return json.loads(text2)
-    except Exception:
-        pass
-
-    # Find first object
-    start_obj = text.find("{")
-    end_obj = text.rfind("}")
-
-    if start_obj >= 0 and end_obj > start_obj:
-
-        candidate = text[start_obj:end_obj + 1]
-
-        try:
-            return json.loads(candidate)
-        except Exception:
-            pass
-
-    # Find first array
-    start_arr = text.find("[")
-    end_arr = text.rfind("]")
-
-    if start_arr >= 0 and end_arr > start_arr:
-
-        candidate = text[start_arr:end_arr + 1]
-
-        try:
-            return json.loads(candidate)
-        except Exception:
-            pass
+    if r.status_code == 200 and r.text:
+        return r.text
 
     return None
 
 
-# ============================================================
-# RECURSIVE RECORD EXTRACTION
-# ============================================================
+# ------------------------------------------------------------
+# PARSE MARKETWATCHPLUS
+# ------------------------------------------------------------
 
-def recursive_records(obj):
+def parse_marketwatchplus(raw):
 
-    records = []
+    """
+    Attempts to read the legacy MarketWatchPlus export.
 
-    if isinstance(obj, list):
+    We deliberately keep this parser tolerant because
+    column positions can change between TSETMC versions.
+    """
 
-        for item in obj:
+    try:
 
-            if isinstance(item, dict):
+        # First try pandas if available.
+        import pandas as pd
 
-                records.append(item)
+        bio = io.BytesIO(raw)
 
-                records.extend(
-                    recursive_records(item)
-                )
-
-            elif isinstance(item, list):
-
-                records.extend(
-                    recursive_records(item)
-                )
-
-        return records
-
-    if isinstance(obj, dict):
-
-        for value in obj.values():
-
-            if isinstance(value, (list, dict)):
-
-                records.extend(
-                    recursive_records(value)
-                )
-
-    return records
-
-
-# ============================================================
-# SYMBOL NORMALIZATION
-# ============================================================
-
-NAME_KEYS = [
-    "lVal18AFC",
-    "lVal18",
-    "symbol",
-    "Symbol",
-    "ticker",
-    "Ticker",
-    "shortName",
-    "shortname",
-    "name",
-    "Name",
-    "instrumentName",
-]
-
-FULL_NAME_KEYS = [
-    "lVal30",
-    "name",
-    "Name",
-    "instrumentName",
-    "companyName",
-]
-
-LAST_PRICE_KEYS = [
-    "pDrCotVal",
-    "lastPrice",
-    "last",
-    "price",
-    "close",
-    "Close",
-    "lastTradePrice",
-]
-
-YESTERDAY_KEYS = [
-    "priceYesterday",
-    "pClosing",
-    "yesterday",
-    "previousClose",
-    "prevClose",
-]
-
-HIGH_KEYS = [
-    "pMax",
-    "maxPrice",
-    "high",
-    "High",
-]
-
-LOW_KEYS = [
-    "pMin",
-    "minPrice",
-    "low",
-    "Low",
-]
-
-VOLUME_KEYS = [
-    "qTotTran5J",
-    "qTotVol",
-    "volume",
-    "Volume",
-    "tradeVolume",
-]
-
-VALUE_KEYS = [
-    "qTotCap",
-    "value",
-    "Value",
-    "tradeValue",
-]
-
-TRADE_COUNT_KEYS = [
-    "zTotTran",
-    "tradeCount",
-    "transactions",
-    "count",
-]
-
-
-def normalize_record(row):
-
-    if not isinstance(row, dict):
-        return None
-
-    symbol = find_first_text(
-        row,
-        NAME_KEYS
-    )
-
-    full_name = find_first_text(
-        row,
-        FULL_NAME_KEYS
-    )
-
-    last_price = first_number(
-        row,
-        LAST_PRICE_KEYS
-    )
-
-    yesterday = first_number(
-        row,
-        YESTERDAY_KEYS
-    )
-
-    high = first_number(
-        row,
-        HIGH_KEYS
-    )
-
-    low = first_number(
-        row,
-        LOW_KEYS
-    )
-
-    volume = first_number(
-        row,
-        VOLUME_KEYS
-    )
-
-    value = first_number(
-        row,
-        VALUE_KEYS
-    )
-
-    trades = first_number(
-        row,
-        TRADE_COUNT_KEYS
-    )
-
-    # Need at least symbol + price
-    if not symbol or last_price is None:
-        return None
-
-    if yesterday and yesterday > 0:
-
-        change_pct = (
-            (last_price - yesterday)
-            / yesterday
-            * 100
+        sheets = pd.read_excel(
+            bio,
+            sheet_name=0,
+            header=None,
         )
 
-    else:
+        rows = sheets.values.tolist()
 
-        change_pct = first_number(
-            row,
-            [
-                "percent",
-                "changePercent",
-                "priceChangePercent",
-                "xVarPClosing",
-            ]
+        if not rows:
+            return []
+
+        return parse_rows(rows)
+
+    except Exception as e:
+
+        print(
+            "⚠️ Excel parser unavailable/failed:",
+            repr(e)
         )
 
-    if change_pct is None:
-        change_pct = 0.0
-
-    return {
-        "symbol": symbol,
-        "name": full_name or symbol,
-        "last": last_price,
-        "yesterday": yesterday or 0,
-        "high": high or 0,
-        "low": low or 0,
-        "volume": volume or 0,
-        "value": value or 0,
-        "trades": trades or 0,
-        "change_pct": change_pct,
-    }
-
-
-# ============================================================
-# MARKET DATA PARSER
-# ============================================================
-
-def parse_market_data(data):
-
-    if data is None:
         return []
 
-    rows = recursive_records(data)
 
-    result = []
+# ------------------------------------------------------------
+# GENERIC ROW PARSER
+# ------------------------------------------------------------
 
-    seen = set()
+def parse_rows(rows):
+
+    results = []
 
     for row in rows:
 
-        item = normalize_record(row)
-
-        if not item:
+        if not row:
             continue
 
-        symbol = item["symbol"]
+        values = []
 
-        if symbol in seen:
+        for x in row:
+
+            if x is None:
+                values.append("")
+
+            else:
+                values.append(str(x).strip())
+
+        # Need a symbol-like field.
+        symbol = ""
+
+        for value in values:
+
+            if (
+                value
+                and len(value) <= 30
+                and not value.replace(".", "", 1).isdigit()
+                and not value.startswith("http")
+            ):
+
+                symbol = value
+                break
+
+        if not symbol:
             continue
 
-        seen.add(symbol)
+        # Extract numeric values.
+        nums = []
 
-        result.append(item)
-
-    # Sometimes source has direct list
-    if not result and isinstance(data, list):
-
-        for row in data:
-
-            item = normalize_record(row)
-
-            if item:
-
-                symbol = item["symbol"]
-
-                if symbol not in seen:
-
-                    seen.add(symbol)
-                    result.append(item)
-
-    return result
-
-
-# ============================================================
-# DIRECT FETCH
-# ============================================================
-
-def fetch_direct(url):
-
-    try:
-
-        r = requests.get(
-            url,
-            headers=HEADERS,
-            timeout=TIMEOUT,
-            allow_redirects=True,
-        )
-
-        if not r.ok:
-
-            return None, (
-                f"HTTP {r.status_code}"
-            )
-
-        content_type = (
-            r.headers.get(
-                "content-type",
-                ""
-            ).lower()
-        )
-
-        # JSON
-        if (
-            "json" in content_type
-            or r.text.lstrip().startswith("{")
-            or r.text.lstrip().startswith("[")
-        ):
+        for value in values:
 
             try:
-                data = r.json()
 
-                return data, "OK"
+                clean = (
+                    value
+                    .replace(",", "")
+                    .replace("٬", "")
+                    .replace("%", "")
+                    .strip()
+                )
+
+                if clean:
+                    n = float(clean)
+
+                    if math.isfinite(n):
+                        nums.append(n)
 
             except Exception:
                 pass
 
-        # Excel / binary
-        if (
-            "excel" in content_type
-            or "spreadsheet" in content_type
-            or url.lower().endswith(".aspx")
-        ):
+        if len(nums) < 2:
+            continue
 
-            return r.content, "BINARY"
+        last_price = nums[-1]
 
-        return r.text, "TEXT"
+        if last_price <= 0:
+            continue
 
-    except requests.exceptions.Timeout:
+        results.append({
+            "symbol": symbol,
+            "price": last_price,
+            "numbers": nums,
+        })
 
-        return None, "TIMEOUT"
+    return results
 
-    except requests.exceptions.ConnectionError as e:
 
-        return None, (
-            f"CONNECTION ERROR: {str(e)[:120]}"
+# ------------------------------------------------------------
+# NORMALIZE CDN JSON
+# ------------------------------------------------------------
+
+def normalize_cdn(data):
+
+    output = []
+
+    def walk(obj):
+
+        if isinstance(obj, dict):
+
+            # Search recursively.
+            for key, value in obj.items():
+
+                if isinstance(value, list):
+
+                    for item in value:
+
+                        if isinstance(item, dict):
+                            parse_dict(item)
+
+                elif isinstance(value, dict):
+                    walk(value)
+
+        elif isinstance(obj, list):
+
+            for item in obj:
+
+                if isinstance(item, dict):
+                    parse_dict(item)
+
+    def parse_dict(item):
+
+        symbol = (
+            item.get("lVal18AFC")
+            or item.get("symbol")
+            or item.get("Symbol")
+            or item.get("insCode")
+            or item.get("instrument")
+            or item.get("name")
         )
 
-    except Exception as e:
-
-        return None, (
-            f"ERROR: {str(e)[:120]}"
+        price = (
+            item.get("pClosing")
+            or item.get("pDrCotVal")
+            or item.get("lastPrice")
+            or item.get("price")
         )
 
-
-# ============================================================
-# JINA FETCH
-# ============================================================
-
-def fetch_jina(url):
-
-    try:
-
-        r = requests.get(
-            url,
-            headers=JINA_HEADERS,
-            timeout=TIMEOUT + 10,
-            allow_redirects=True,
+        change = (
+            item.get("percent")
+            or item.get("changePercent")
+            or item.get("percentChange")
         )
 
-        if not r.ok:
+        volume = (
+            item.get("qTotTran5J")
+            or item.get("volume")
+            or item.get("Volume")
+        )
 
-            return None, (
-                f"HTTP {r.status_code}"
-            )
-
-        raw = r.text
-
-        # Jina JSON response
         try:
 
-            wrapper = r.json()
+            if price is None:
+                return
 
-            if isinstance(wrapper, dict):
+            price = float(price)
 
-                data = wrapper.get(
-                    "data"
-                )
-
-                if isinstance(data, dict):
-
-                    content = data.get(
-                        "content"
-                    )
-
-                    if content:
-
-                        parsed = (
-                            extract_json_from_text(
-                                content
-                            )
-                        )
-
-                        if parsed is not None:
-                            return parsed, "OK"
-
-                        return content, "TEXT"
+            if price <= 0:
+                return
 
         except Exception:
-            pass
+            return
 
-        # Plain response
-        parsed = extract_json_from_text(raw)
+        output.append({
+            "symbol": str(symbol or ""),
+            "price": price,
+            "change": safe_float(change),
+            "volume": safe_float(volume),
+        })
 
-        if parsed is not None:
+    walk(data)
 
-            return parsed, "OK"
-
-        return raw, "TEXT"
-
-    except requests.exceptions.Timeout:
-
-        return None, "TIMEOUT"
-
-    except requests.exceptions.ConnectionError as e:
-
-        return None, (
-            f"CONNECTION ERROR: {str(e)[:120]}"
-        )
-
-    except Exception as e:
-
-        return None, (
-            f"ERROR: {str(e)[:120]}"
-        )
+    return output
 
 
-# ============================================================
-# EXCEL PARSER
-# ============================================================
+# ------------------------------------------------------------
+# SAFE FLOAT
+# ------------------------------------------------------------
 
-def parse_excel_bytes(content):
-
-    """
-    Optional parser.
-
-    Uses pandas only if available.
-    GitHub Actions usually can install it if needed,
-    but this bot does NOT require pandas for JSON/JINA.
-    """
-
-    if not isinstance(content, (bytes, bytearray)):
-        return []
+def safe_float(value):
 
     try:
 
-        import io
-        import pandas as pd
+        if value is None:
+            return 0.0
 
-        sheets = pd.read_excel(
-            io.BytesIO(content),
-            sheet_name=None,
-            header=None,
+        return float(
+            str(value)
+            .replace(",", "")
+            .replace("%", "")
+            .strip()
         )
 
-        result = []
-
-        for _, df in sheets.items():
-
-            for _, row in df.iterrows():
-
-                values = list(row.values)
-
-                if not values:
-                    continue
-
-                # Try to identify a symbol and prices
-                text_values = [
-                    str(x)
-                    for x in values
-                    if x is not None
-                    and str(x) != "nan"
-                ]
-
-                if not text_values:
-                    continue
-
-                symbol = ""
-
-                for value in text_values:
-
-                    if (
-                        len(value) <= 20
-                        and not value.replace(
-                            ".", "", 1
-                        ).isdigit()
-                    ):
-
-                        symbol = value
-                        break
-
-                if not symbol:
-                    continue
-
-                numbers = []
-
-                for value in values:
-
-                    n = clean_number(value)
-
-                    if n is not None:
-                        numbers.append(n)
-
-                if not numbers:
-                    continue
-
-                last = numbers[0]
-
-                result.append(
-                    {
-                        "symbol": symbol,
-                        "name": symbol,
-                        "last": last,
-                        "yesterday": 0,
-                        "high": 0,
-                        "low": 0,
-                        "volume": 0,
-                        "value": 0,
-                        "trades": 0,
-                        "change_pct": 0,
-                    }
-                )
-
-        return result
-
     except Exception:
-        return []
+        return 0.0
 
 
-# ============================================================
-# SOURCE RUNNER
-# ============================================================
-
-def try_source(
-    name,
-    url,
-    is_jina=False,
-):
-
-    if is_jina:
-
-        data, status = fetch_jina(url)
-
-    else:
-
-        data, status = fetch_direct(url)
-
-    if data is None:
-
-        return [], status
-
-    # Excel
-    if isinstance(data, (bytes, bytearray)):
-
-        rows = parse_excel_bytes(data)
-
-        if rows:
-
-            return rows, "OK"
-
-        return [], "EXCEL PARSE FAILED"
-
-    rows = parse_market_data(data)
-
-    if rows:
-
-        return rows, f"OK ({len(rows)} rows)"
-
-    # If Jina returned text, try JSON again
-    if isinstance(data, str):
-
-        parsed = extract_json_from_text(data)
-
-        if parsed is not None:
-
-            rows = parse_market_data(parsed)
-
-            if rows:
-
-                return rows, (
-                    f"OK ({len(rows)} rows)"
-                )
-
-    return [], "NO VALID MARKET ROWS"
-
-
-# ============================================================
-# MARKET FETCH
-# ============================================================
+# ------------------------------------------------------------
+# MARKET DATA
+# ------------------------------------------------------------
 
 def get_market():
 
     diagnostics = []
 
-    # --------------------------------------------------------
-    # 1. JINA SOURCES FIRST
-    # --------------------------------------------------------
+    # SOURCE 1
+    try:
 
-    for name, url in JINA_SOURCES:
+        data, source, diag = source_tsetmc_cdn()
 
-        rows, status = try_source(
-            name,
-            url,
-            is_jina=True,
-        )
+        diagnostics.extend(diag)
 
-        diagnostics.append(
-            f"• {name}: {status}"
-        )
+        if data:
 
-        if rows:
+            normalized = normalize_cdn(data)
 
-            return rows, diagnostics, name
+            if normalized:
 
-        # Avoid hammering the sources
-        time.sleep(1)
+                return normalized, source, diagnostics
 
-    # --------------------------------------------------------
-    # 2. DIRECT SOURCES
-    # --------------------------------------------------------
-
-    for name, url in DIRECT_SOURCES:
-
-        rows, status = try_source(
-            name,
-            url,
-            is_jina=False,
-        )
+    except Exception as e:
 
         diagnostics.append(
-            f"• {name}: {status}"
+            f"CDN exception: {e}"
         )
 
-        if rows:
+    # SOURCE 2
+    try:
 
-            return rows, diagnostics, name
+        raw, source, diag = source_marketwatch_plus()
 
-        time.sleep(1)
+        diagnostics.extend(diag)
 
-    return [], diagnostics, ""
+        if raw:
 
+            normalized = parse_marketwatchplus(raw)
 
-# ============================================================
-# FILTERS
-# ============================================================
+            if normalized:
 
-def is_valid_stock(item):
+                return normalized, source, diagnostics
 
-    symbol = item.get(
-        "symbol",
-        ""
-    ).strip()
+    except Exception as e:
 
-    if not symbol:
-        return False
+        diagnostics.append(
+            f"MarketWatchPlus exception: {e}"
+        )
 
-    if len(symbol) > 30:
-        return False
-
-    last = item.get(
-        "last",
-        0
-    )
-
-    if last <= 0:
-        return False
-
-    # Ignore obvious index rows
-    bad_words = [
-        "شاخص",
-        "index",
-        "کل",
-        "هم وزن",
-        "هم‌وزن",
-    ]
-
-    text = (
-        symbol.lower()
-        + " "
-        + item.get(
-            "name",
-            ""
-        ).lower()
-    )
-
-    for word in bad_words:
-
-        if word.lower() in text:
-            return False
-
-    return True
+    return [], None, diagnostics
 
 
-# ============================================================
-# SCORE
-# ============================================================
+# ------------------------------------------------------------
+# FILTER
+# ------------------------------------------------------------
 
-def score_stock(item):
+def clean_market(items):
+
+    clean = []
+
+    for item in items:
+
+        symbol = str(
+            item.get("symbol", "")
+        ).strip()
+
+        price = safe_float(
+            item.get("price")
+        )
+
+        if not symbol:
+            continue
+
+        if price <= 0:
+            continue
+
+        # Ignore obvious non-stock rows.
+        bad_words = [
+            "شاخص",
+            "ارزش",
+            "تعداد",
+            "بازار",
+            "Market",
+            "Index",
+        ]
+
+        if any(
+            word.lower() in symbol.lower()
+            for word in bad_words
+        ):
+            continue
+
+        item["price"] = price
+
+        clean.append(item)
+
+    return clean
+
+
+# ------------------------------------------------------------
+# SIMPLE MOMENTUM SCORE
+# ------------------------------------------------------------
+
+def score_item(item):
 
     score = 0.0
 
-    change = item.get(
-        "change_pct",
-        0
+    change = safe_float(
+        item.get("change")
     )
 
-    volume = item.get(
-        "volume",
-        0
+    volume = safe_float(
+        item.get("volume")
     )
 
-    value = item.get(
-        "value",
-        0
-    )
+    # Positive price movement.
+    if change > 0:
+        score += min(change * 2.0, 20)
 
-    trades = item.get(
-        "trades",
-        0
-    )
+    if change >= 2:
+        score += 5
 
-    # Momentum
     if change >= 4:
-        score += 40
+        score += 5
 
-    elif change >= 3:
-        score += 34
-
-    elif change >= 2:
-        score += 28
-
-    elif change >= 1:
-        score += 18
-
-    elif change > 0:
-        score += 8
-
-    elif change < -4:
-        score -= 30
-
-    elif change < -2:
-        score -= 20
-
-    elif change < 0:
-        score -= 8
-
-    # Volume
+    # Volume bonus.
     if volume > 0:
+        score += 2
 
-        if volume >= 10_000_000:
-            score += 20
+    item["score"] = round(score, 2)
 
-        elif volume >= 1_000_000:
-            score += 14
-
-        elif volume >= 100_000:
-            score += 8
-
-        else:
-            score += 3
-
-    # Value
-    if value > 0:
-
-        if value >= 100_000_000_000:
-            score += 20
-
-        elif value >= 10_000_000_000:
-            score += 14
-
-        elif value >= 1_000_000_000:
-            score += 8
-
-    # Number of trades
-    if trades > 10_000:
-        score += 10
-
-    elif trades > 2_000:
-        score += 7
-
-    elif trades > 500:
-        score += 4
-
-    return score
+    return item
 
 
-# ============================================================
-# REPORT
-# ============================================================
+# ------------------------------------------------------------
+# SELECT TOP SYMBOLS
+# ------------------------------------------------------------
 
-def make_report(
-    rows,
-    source_name,
-):
+def select_symbols(items, limit=10):
 
-    valid = [
-        x
-        for x in rows
-        if is_valid_stock(x)
-    ]
+    scored = []
 
-    for item in valid:
+    for item in items:
 
-        item["score"] = score_stock(item)
+        try:
+            scored.append(
+                score_item(dict(item))
+            )
 
-    valid.sort(
-        key=lambda x: (
-            x["score"],
-            x["change_pct"],
-        ),
+        except Exception:
+            continue
+
+    scored.sort(
+        key=lambda x: x.get("score", 0),
         reverse=True,
     )
 
-    top = valid[:10]
+    return scored[:limit]
+
+
+# ------------------------------------------------------------
+# TELEGRAM REPORT
+# ------------------------------------------------------------
+
+def build_report(items, source):
 
     now = datetime.now(
         timezone.utc
-    ).strftime(
-        "%Y-%m-%d %H:%M:%S UTC"
-    )
+    ).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    lines = []
+    lines = [
+        "💓 ATI BOURSE ALIVE",
+        f"⚡ {VERSION}",
+        "📊 بورس و فرابورس ایران",
+        f"📡 SOURCE: {source}",
+        "🔑 BRS_API_KEY: NOT USED",
+        "🔒 REAL TRADING: OFF",
+        "",
+    ]
 
-    lines.append(
-        "💓 ATI BOURSE ALIVE"
-    )
+    if not items:
 
-    lines.append(
-        f"⚡ {BOT_VERSION}"
-    )
+        lines.extend([
+            "⚠️ سهم قابل‌اعتماد پیدا نشد.",
+            "",
+            f"🕐 {now}",
+        ])
 
-    lines.append(
-        "📊 بورس و فرابورس ایران"
-    )
-
-    lines.append(
-        "🔒 REAL TRADING: OFF"
-    )
-
-    lines.append(
-        f"📡 SOURCE: {source_name}"
-    )
+        return "\n".join(lines)
 
     lines.append(
-        f"📈 VALID SYMBOLS: {len(valid)}"
+        f"📈 TOP {len(items)} CANDIDATES"
     )
 
     lines.append("")
 
-    if not top:
+    for i, item in enumerate(items, 1):
 
-        lines.append(
-            "⚠️ نماد معتبر برای تحلیل پیدا نشد."
+        symbol = item.get(
+            "symbol",
+            "UNKNOWN"
         )
 
-    else:
-
-        lines.append(
-            "🔥 برترین نمادهای صعودی:"
+        price = item.get(
+            "price",
+            0
         )
 
-        for i, item in enumerate(
-            top,
-            start=1
-        ):
+        change = item.get(
+            "change",
+            0
+        )
 
-            symbol = item["symbol"]
+        score = item.get(
+            "score",
+            0
+        )
 
-            change = item[
-                "change_pct"
-            ]
+        lines.append(
+            f"{i}️⃣ {symbol}\n"
+            f"   💰 قیمت: {price:g}\n"
+            f"   📈 تغییر: {change:.2f}%\n"
+            f"   🎯 Score: {score:g}"
+        )
 
-            price = item["last"]
-
-            score = item["score"]
-
-            lines.append(
-                f"{i}️⃣ {symbol} | "
-                f"💰 {price:,.0f} | "
-                f"📈 {change:+.2f}% | "
-                f"⭐ {score:.0f}"
-            )
-
-    lines.append("")
-
-    lines.append(
-        "⚠️ این خروجی سیگنال قطعی خرید نیست."
-    )
-
-    lines.append(
-        f"🕐 {now}"
-    )
+    lines.extend([
+        "",
+        "⚠️ این خروجی فقط اسکن بازار است.",
+        "🚫 هیچ سفارش خرید/فروشی ارسال نمی‌شود.",
+        "",
+        f"🕐 {now}",
+    ])
 
     return "\n".join(lines)
 
 
-# ============================================================
-# ERROR REPORT
-# ============================================================
+# ------------------------------------------------------------
+# DIAGNOSTIC ERROR
+# ------------------------------------------------------------
 
-def make_error_report(
-    diagnostics
-):
+def build_error(diagnostics):
 
     now = datetime.now(
         timezone.utc
-    ).strftime(
-        "%Y-%m-%d %H:%M:%S UTC"
-    )
+    ).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    lines = []
+    lines = [
+        "❌ ATI BOURSE ERROR",
+        "",
+        "هیچ داده عمومی معتبری از بازار دریافت نشد.",
+        "",
+        "🔑 BRS_API_KEY استفاده نمی‌شود.",
+        "🔒 REAL TRADING: OFF",
+        "",
+        "📋 DIAGNOSTIC:",
+    ]
 
-    lines.append(
-        "❌ ATI BOURSE ERROR"
-    )
+    # Only show useful unique diagnostics.
+    seen = set()
 
-    lines.append("")
+    for d in diagnostics:
 
-    lines.append(
-        "هیچ داده عمومی معتبری از بازار دریافت نشد."
-    )
+        d = str(d).strip()
 
-    lines.append("")
+        if not d:
+            continue
 
-    lines.append(
-        "🔑 BRS_API_KEY استفاده نمی‌شود."
-    )
+        if d in seen:
+            continue
 
-    lines.append(
-        "🔒 REAL TRADING: OFF"
-    )
+        seen.add(d)
 
-    lines.append("")
+        lines.append(
+            f"• {d}"
+        )
 
-    lines.append(
-        "📋 DIAGNOSTIC:"
-    )
+        if len(seen) >= 10:
+            break
 
-    lines.extend(
-        diagnostics
-    )
-
-    lines.append("")
-
-    lines.append(
-        "🔁 نسخه V3 ابتدا JINA → TSETMC "
-        "و سپس TSETMC مستقیم را امتحان کرد."
-    )
-
-    lines.append(
-        "🕐 " + now
-    )
+    lines.extend([
+        "",
+        "🔁 ATI V4 چند منبع عمومی را امتحان کرد.",
+        "⚠️ اگر همه منابع TIMEOUT باشند، مشکل دسترسی شبکه/IP است؛ نه API Key.",
+        "",
+        f"🕐 {now}",
+    ])
 
     return "\n".join(lines)
 
 
-# ============================================================
+# ------------------------------------------------------------
 # MAIN
-# ============================================================
+# ------------------------------------------------------------
 
 def main():
 
-    print(
-        "========================================"
-    )
+    print("=" * 60)
+    print(f"ATI BOURSE {VERSION}")
+    print("=" * 60)
+
+    print("🔑 BRS_API_KEY: NOT USED")
+    print("🔒 REAL TRADING: OFF")
+    print("📡 Starting market scan...")
+
+    items, source, diagnostics = get_market()
+
+    items = clean_market(items)
 
     print(
-        f"ATI BOURSE {BOT_VERSION}"
+        f"📊 Raw/clean items: {len(items)}"
     )
 
-    print(
-        "BRS_API_KEY: NOT USED"
-    )
+    if not items:
 
-    print(
-        "REAL TRADING: OFF"
-    )
-
-    print(
-        "========================================"
-    )
-
-    rows, diagnostics, source = (
-        get_market()
-    )
-
-    if not rows:
-
-        message = make_error_report(
+        message = build_error(
             diagnostics
         )
 
         print(message)
-
         telegram_send(message)
 
-        return
+        return 0
 
-    message = make_report(
-        rows,
-        source,
+    selected = select_symbols(
+        items,
+        limit=10,
+    )
+
+    message = build_report(
+        selected,
+        source or "UNKNOWN",
     )
 
     print(message)
 
     telegram_send(message)
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+
+    try:
+
+        raise SystemExit(
+            main()
+        )
+
+    except Exception as e:
+
+        error = (
+            "🚨 ATI BOURSE FATAL ERROR\n\n"
+            f"{type(e).__name__}: {e}\n\n"
+            "🔒 REAL TRADING: OFF"
+        )
+
+        print(error)
+
+        telegram_send(error)
+
+        raise
