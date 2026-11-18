@@ -11,7 +11,7 @@ permissions:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 7
 
     steps:
       - name: Checkout repository
@@ -25,17 +25,16 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          else
-            pip install requests pandas numpy
-          fi
+          pip install requests openpyxl
 
       - name: Run ATI Bourse Bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TOP_SIGNALS: "5"
+          MIN_SCORE: "55"
         run: |
           echo "ATI BOURSE BOT - START"
+          python -m py_compile main.py
           python main.py
           echo "ATI BOURSE BOT - FINISHED"
