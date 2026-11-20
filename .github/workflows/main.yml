@@ -1,3 +1,4 @@
+
 name: ATI Bourse Bot
 
 on:
@@ -8,14 +9,26 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ati-bourse-bot
+  cancel-in-progress: false
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 7
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Restore hourly cache
+        uses: actions/cache@v4
+        with:
+          path: hourly_cache
+          key: hourly-cache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            hourly-cache-${{ runner.os }}-
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -34,7 +47,5 @@ jobs:
           TOP_SIGNALS: "5"
           MIN_SCORE: "55"
         run: |
-          echo "ATI BOURSE BOT - START"
           python -m py_compile main.py
           python main.py
-          echo "ATI BOURSE BOT - FINISHED"
