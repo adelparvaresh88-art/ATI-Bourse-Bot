@@ -1,7 +1,6 @@
 
 import os
 import time
-import json
 import requests
 import traceback
 from datetime import datetime, timezone
@@ -14,6 +13,7 @@ TIMEFRAME = 60
 TENKAN = 9
 KIJUN = 26
 SENKOU_B = 52
+RECENT_CROSS_BARS = 3
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
@@ -52,14 +52,9 @@ def extract_rows(data):
         return []
 
     for key in (
-        "marketwatch",
-        "marketWatch",
-        "MarketWatch",
-        "instrumentState",
-        "instrument",
-        "data",
-        "items",
-        "Items"
+        "marketwatch", "marketWatch", "MarketWatch",
+        "instrumentState", "instrument", "data",
+        "items", "Items"
     ):
         value = data.get(key)
 
@@ -72,6 +67,21 @@ def extract_rows(data):
                 return rows
 
     return []
+
+
+def extract_code(item):
+    if not isinstance(item, dict):
+        return None
+
+    for key in (
+        "insCode", "InsCode", "instrumentCode",
+        "instrumentId", "ins_code"
+    ):
+        value = item.get(key)
+        if value:
+            return str(value)
+
+    return None
 
 
 def parse_old_marketwatch(text):
@@ -161,12 +171,10 @@ def get_market_list():
                 params=params if mode == "json" else None,
                 timeout=35
             )
-
             r.raise_for_status()
 
             if mode == "json":
-                data = r.json()
-                rows = extract_rows(data)
+                rows = extract_rows(r.json())
             else:
                 rows = parse_old_marketwatch(r.text)
 
@@ -176,10 +184,7 @@ def get_market_list():
             ]
 
             if valid:
-                print(
-                    f"SUCCESS: {name} | "
-                    f"Markets: {len(valid)}"
-                )
+                print(f"SUCCESS: {name} | Markets: {len(valid)}")
                 return valid[:MAX_MARKETS]
 
             errors.append(f"{name}: No valid rows")
@@ -194,24 +199,6 @@ def get_market_list():
     )
 
 
-def extract_code(item):
-    if not isinstance(item, dict):
-        return None
-
-    for key in (
-        "insCode",
-        "InsCode",
-        "instrumentCode",
-        "instrumentId",
-        "ins_code"
-    ):
-        value = item.get(key)
-        if value:
-            return str(value)
-
-    return None
-
-
 def get_hourly_candles(ins_code):
     url = (
         "https://cdn.tsetmc.com/api/ClosingPrice/"
@@ -220,7 +207,6 @@ def get_hourly_candles(ins_code):
 
     r = SESSION.get(url, timeout=25)
     r.raise_for_status()
-
     data = r.json()
 
     if isinstance(data, dict):
@@ -274,11 +260,16 @@ def get_hourly_candles(ins_code):
     return candles
 
 
-def midpoint(candles, period):
-    if len(candles) < period:
+def midpoint(candles, period, end_index):
+    start = end_index - period + 1
+
+    if start < 0:
         return None
 
-    recent = candles[-period:]
+    recent = candles[start:end_index + 1]
+
+    if len(recent) != period:
+        return None
 
     highest = max(x["high"] for x in recent)
     lowest = min(x["low"] for x in recent)
@@ -286,53 +277,108 @@ def midpoint(candles, period):
     return (highest + lowest) / 2
 
 
-def ichimoku_buy_signal(candles):
-    if len(candles) < SENKOU_B + 3:
-        return False, "Not enough candles"
+def ichimoku_analysis(candles):
+    if len(candles) < SENKOU_B + KIJUN + 5:
+        return False, "Not enough candles", "insufficient"
 
+    # آخرین کندل حذف می‌شود تا فقط کندل‌های بسته‌شده بررسی شوند.
     closed = candles[:-1]
+    last = len(closed) - 1
 
-    if len(closed) < SENKOU_B + 2:
-        return False, "Not enough closed candles"
+    tenkan_values = []
+    kijun_values = []
+    span_a_values = []
+    span_b_values = []
 
-    previous = closed[:-1]
-    current = closed
+    for i in range(len(closed)):
+        tenkan = midpoint(closed, TENKAN, i)
+        kijun = midpoint(closed, KIJUN, i)
+        span_b = midpoint(closed, SENKOU_B, i)
 
-    tenkan_now = midpoint(current, TENKAN)
-    kijun_now = midpoint(current, KIJUN)
+        tenkan_values.append(tenkan)
+        kijun_values.append(kijun)
 
-    tenkan_prev = midpoint(previous, TENKAN)
-    kijun_prev = midpoint(previous, KIJUN)
+        if tenkan is not None and kijun is not None:
+            span_a_values.append((tenkan + kijun) / 2)
+        else:
+            span_a_values.append(None)
 
-    if None in (
-        tenkan_now,
-        kijun_now,
-        tenkan_prev,
-        kijun_prev
-    ):
-        return False, "Calculation unavailable"
+        span_b_values.append(span_b)
 
-    span_a = (tenkan_now + kijun_now) / 2
-    span_b = midpoint(current, SENKOU_B)
+    # ابر قابل مشاهده در زمان فعلی، ۲۶ کندل قبل محاسبه شده است.
+    cloud_index = last - KIJUN
 
-    price = current[-1]["close"]
+    if cloud_index < 0:
+        return False, "Cloud unavailable", "insufficient"
+
+    span_a = span_a_values[cloud_index]
+    span_b = span_b_values[cloud_index]
+
+    if span_a is None or span_b is None:
+        return False, "Cloud unavailable", "insufficient"
+
     cloud_top = max(span_a, span_b)
-
-    bullish_cross = (
-        tenkan_prev <= kijun_prev
-        and tenkan_now > kijun_now
-    )
+    price = closed[last]["close"]
 
     above_cloud = price > cloud_top
 
-    if bullish_cross and above_cloud:
-        return True, (
+    tenkan_now = tenkan_values[last]
+    kijun_now = kijun_values[last]
+
+    if tenkan_now is None or kijun_now is None:
+        return False, "Calculation unavailable", "insufficient"
+
+    bullish_position = tenkan_now > kijun_now
+
+    # کراس صعودی در سه کندل بسته‌شده اخیر جست‌وجو می‌شود.
+    cross_found = False
+    cross_index = None
+
+    first_index = max(KIJUN + 1, last - RECENT_CROSS_BARS + 1)
+
+    for i in range(first_index, last + 1):
+        previous_tenkan = tenkan_values[i - 1]
+        previous_kijun = kijun_values[i - 1]
+        current_tenkan = tenkan_values[i]
+        current_kijun = kijun_values[i]
+
+        if None in (
+            previous_tenkan,
+            previous_kijun,
+            current_tenkan,
+            current_kijun
+        ):
+            continue
+
+        if (
+            previous_tenkan <= previous_kijun
+            and current_tenkan > current_kijun
+        ):
+            cross_found = True
+            cross_index = i
+
+    if above_cloud and bullish_position and cross_found:
+        bars_ago = last - cross_index
+
+        details = (
             f"قیمت: {price:.2f}\n"
             f"تنکان: {tenkan_now:.2f}\n"
-            f"کیجون: {kijun_now:.2f}"
+            f"کیجون: {kijun_now:.2f}\n"
+            f"فاصله از کراس: {bars_ago} کندل"
         )
 
-    return False, "No buy signal"
+        return True, details, "buy"
+
+    if above_cloud and bullish_position:
+        return False, "Above cloud and bullish position", "bullish_no_cross"
+
+    if above_cloud:
+        return False, "Above cloud", "above_cloud"
+
+    if bullish_position:
+        return False, "Tenkan above Kijun", "bullish_position"
+
+    return False, "No buy condition", "none"
 
 
 def main():
@@ -357,6 +403,10 @@ def main():
         signals = []
         checked = 0
         errors = 0
+        above_cloud_count = 0
+        bullish_count = 0
+        recent_cross_count = 0
+        insufficient_count = 0
 
         for item in markets:
             ins_code = extract_code(item)
@@ -369,9 +419,25 @@ def main():
             try:
                 candles = get_hourly_candles(ins_code)
 
-                signal, details = ichimoku_buy_signal(
-                    candles
-                )
+                signal, details, status = ichimoku_analysis(candles)
+
+                if status == "above_cloud":
+                    above_cloud_count += 1
+
+                elif status == "bullish_position":
+                    bullish_count += 1
+
+                elif status == "bullish_no_cross":
+                    above_cloud_count += 1
+                    bullish_count += 1
+
+                elif status == "buy":
+                    above_cloud_count += 1
+                    bullish_count += 1
+                    recent_cross_count += 1
+
+                elif status == "insufficient":
+                    insufficient_count += 1
 
                 if signal:
                     name = (
@@ -399,6 +465,10 @@ def main():
             f"Markets: {len(markets)} | "
             f"Checked: {checked} | "
             f"Signals: {len(signals)} | "
+            f"Above cloud: {above_cloud_count} | "
+            f"Bullish: {bullish_count} | "
+            f"Recent crosses: {recent_cross_count} | "
+            f"Insufficient candles: {insufficient_count} | "
             f"Errors: {errors}"
         )
 
@@ -410,6 +480,10 @@ def main():
                 "ATI BOURSE BOT\n"
                 "در این اجرا سیگنال خرید پیدا نشد.\n"
                 f"نمادهای بررسی‌شده: {checked}\n"
+                f"بالای ابر کومو: {above_cloud_count}\n"
+                f"تنکان بالای کیجون: {bullish_count}\n"
+                f"کراس صعودی اخیر: {recent_cross_count}\n"
+                f"کندل ناکافی: {insufficient_count}\n"
                 f"خطاها: {errors}"
             )
 
