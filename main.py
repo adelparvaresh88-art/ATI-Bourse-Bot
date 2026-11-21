@@ -4,7 +4,10 @@ import json
 import time
 import requests
 import traceback
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+# ================= SETTINGS =================
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
@@ -16,19 +19,44 @@ HISTORY_DAYS = 35
 TENKAN = 9
 KIJUN = 26
 
+TEHRAN = ZoneInfo("Asia/Tehran")
+
+# شنبه تا چهارشنبه
+MARKET_DAYS = {5, 6, 0, 1, 2}
+
+MARKET_OPEN = (9, 0)
+MARKET_CLOSE = (12, 30)
+
 CACHE_DIR = "hourly_cache"
 STATE_FILE = os.path.join(CACHE_DIR, "cross_state.json")
 SCAN_STATE_FILE = os.path.join(CACHE_DIR, "scan_state.json")
 
-HEADERS = {
+SESSION = requests.Session()
+SESSION.headers.update({
     "User-Agent": "Mozilla/5.0 Chrome/120.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
     "Referer": "https://www.tsetmc.com/"
-}
+})
 
-SESSION = requests.Session()
-SESSION.headers.update(HEADERS)
 
+# ================= MARKET TIME =================
+
+def tehran_now():
+    return datetime.now(TEHRAN)
+
+
+def market_is_open():
+    now = tehran_now()
+
+    if now.weekday() not in MARKET_DAYS:
+        return False
+
+    current = (now.hour, now.minute)
+
+    return MARKET_OPEN <= current < MARKET_CLOSE
+
+
+# ================= TELEGRAM =================
 
 def send_telegram(message):
     if not BOT_TOKEN or not CHAT_ID:
@@ -38,15 +66,22 @@ def send_telegram(message):
     try:
         response = SESSION.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": message},
+            data={
+                "chat_id": CHAT_ID,
+                "text": message
+            },
             timeout=20
         )
-        print("Telegram:", response.status_code, response.text[:200])
+
+        print("Telegram:", response.status_code)
         return response.ok
+
     except Exception as error:
         print("Telegram error:", error)
         return False
 
+
+# ================= MARKET DATA =================
 
 def extract_rows(data):
     if isinstance(data, list):
@@ -57,7 +92,8 @@ def extract_rows(data):
 
     for key in (
         "marketwatch", "marketWatch", "MarketWatch",
-        "instrumentState", "instrument", "data", "items", "Items"
+        "instrumentState", "instrument", "data",
+        "items", "Items"
     ):
         value = data.get(key)
 
@@ -81,6 +117,7 @@ def extract_code(item):
         "instrumentId", "ins_code"
     ):
         value = item.get(key)
+
         if value:
             return str(value)
 
@@ -117,6 +154,7 @@ def parse_old_marketwatch(content):
 
 
 def get_market_list():
+
     params = {
         "market": 0,
         "industrialGroup": "",
@@ -151,6 +189,7 @@ def get_market_list():
                 params=params if is_json else None,
                 timeout=25
             )
+
             response.raise_for_status()
 
             rows = (
@@ -183,11 +222,12 @@ def get_market_list():
     )
 
 
+# ================= CACHE =================
+
 def load_json(path, default):
     try:
         with open(path, "r", encoding="utf-8") as file:
-            result = json.load(file)
-        return result
+            return json.load(file)
     except (OSError, ValueError):
         return default
 
@@ -199,10 +239,39 @@ def save_json(path, data):
         json.dump(data, file, ensure_ascii=False)
 
 
+def load_state():
+    data = load_json(STATE_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+
+def save_state(state):
+    save_json(STATE_FILE, state)
+
+
+def load_scan_offset():
+    data = load_json(SCAN_STATE_FILE, {})
+
+    try:
+        return max(0, int(data.get("offset", 0)))
+    except (TypeError, ValueError, AttributeError):
+        return 0
+
+
+def save_scan_offset(offset):
+    save_json(SCAN_STATE_FILE, {"offset": offset})
+
+
+# ================= HOURLY CANDLES =================
+
 def get_hourly_candles(ins_code):
+
     os.makedirs(CACHE_DIR, exist_ok=True)
 
-    cache_path = os.path.join(CACHE_DIR, f"{ins_code}.json")
+    cache_path = os.path.join(
+        CACHE_DIR,
+        f"{ins_code}.json"
+    )
+
     cache = load_json(cache_path, {})
 
     if not isinstance(cache, dict):
@@ -235,8 +304,7 @@ def get_hourly_candles(ins_code):
         return []
 
     for day in dates:
-        # روزهای قدیمی ذخیره‌شده دوباره دریافت نمی‌شوند.
-        # آخرین روز برای دریافت اطلاعات تازه دوباره بررسی می‌شود.
+
         if day in cache and day != dates[0]:
             continue
 
@@ -250,6 +318,7 @@ def get_hourly_candles(ins_code):
             response.raise_for_status()
 
             result = response.json()
+
             trades = (
                 result.get("tradeHistory", [])
                 if isinstance(result, dict)
@@ -257,12 +326,13 @@ def get_hourly_candles(ins_code):
             )
 
         except Exception as error:
-            print("Trade history error:", ins_code, day, error)
+            print("Trade history error:", error)
             continue
 
         buckets = {}
 
         for trade in trades:
+
             if not isinstance(trade, dict):
                 continue
 
@@ -272,6 +342,10 @@ def get_hourly_candles(ins_code):
                 price = float(trade.get("pTran", 0))
 
                 if hour < 9 or hour > 12 or price <= 0:
+                    continue
+
+                # حذف معاملات بعد از 12:30
+                if hour == 12 and trade_time >= 123000:
                     continue
 
                 if hour not in buckets:
@@ -287,8 +361,13 @@ def get_hourly_candles(ins_code):
                 else:
                     candle = buckets[hour]
 
-                    candle["high"] = max(candle["high"], price)
-                    candle["low"] = min(candle["low"], price)
+                    candle["high"] = max(
+                        candle["high"], price
+                    )
+
+                    candle["low"] = min(
+                        candle["low"], price
+                    )
 
                     if trade_time < candle["first"]:
                         candle["first"] = trade_time
@@ -313,28 +392,31 @@ def get_hourly_candles(ins_code):
 
         time.sleep(0.05)
 
-    # نگهداری حداکثر 40 روز اطلاعات
     keep = sorted(cache.keys(), reverse=True)[:40]
-    cache = {day: cache[day] for day in keep}
+
+    cache = {
+        day: cache[day]
+        for day in keep
+    }
 
     save_json(cache_path, cache)
 
     candles = []
 
-    iran_now = datetime.now(timezone.utc) + timedelta(
-        hours=3, minutes=30
-    )
-    today = iran_now.strftime("%Y%m%d")
+    now = tehran_now()
+    today = now.strftime("%Y%m%d")
 
     for day in sorted(dates):
+
         for candle in cache.get(day, []):
+
             hour = int(candle["hour"])
 
-            # کندل ساعت جاری تا بسته‌شدن وارد محاسبه نمی‌شود.
-            if day == today and hour == iran_now.hour:
+            # کندل جاری کامل نشده است
+            if day == today and hour == now.hour:
                 if 9 <= hour <= 12:
                     if not (
-                        hour == 12 and iran_now.minute >= 30
+                        hour == 12 and now.minute >= 30
                     ):
                         continue
 
@@ -347,10 +429,14 @@ def get_hourly_candles(ins_code):
             })
 
     print(ins_code, "closed candles:", len(candles))
+
     return candles
 
 
+# ================= ICHIMOKU =================
+
 def midpoint(candles, period, end_index):
+
     start = end_index - period + 1
 
     if start < 0:
@@ -368,17 +454,28 @@ def midpoint(candles, period, end_index):
 
 
 def check_tenkan_kijun_cross(candles):
+
     if len(candles) < KIJUN + 1:
         return None
 
     last = len(candles) - 1
     previous = last - 1
 
-    tenkan_previous = midpoint(candles, TENKAN, previous)
-    kijun_previous = midpoint(candles, KIJUN, previous)
+    tenkan_previous = midpoint(
+        candles, TENKAN, previous
+    )
 
-    tenkan_now = midpoint(candles, TENKAN, last)
-    kijun_now = midpoint(candles, KIJUN, last)
+    kijun_previous = midpoint(
+        candles, KIJUN, previous
+    )
+
+    tenkan_now = midpoint(
+        candles, TENKAN, last
+    )
+
+    kijun_now = midpoint(
+        candles, KIJUN, last
+    )
 
     values = (
         tenkan_previous,
@@ -390,48 +487,39 @@ def check_tenkan_kijun_cross(candles):
     if any(value is None for value in values):
         return None
 
-    # فقط کراس صعودی تنکانسن از پایین کیجونسن
     if (
         tenkan_previous <= kijun_previous
         and tenkan_now > kijun_now
     ):
+
         candle = candles[last]
 
         return {
             "tenkan": tenkan_now,
             "kijun": kijun_now,
             "price": candle["close"],
-            "cross_id": f"{candle['date']}_{candle['hour']}"
+            "cross_id": (
+                f"{candle['date']}_{candle['hour']}"
+            )
         }
 
     return None
 
 
-def load_state():
-    state = load_json(STATE_FILE, {})
-    return state if isinstance(state, dict) else {}
-
-
-def save_state(state):
-    save_json(STATE_FILE, state)
-
-
-def load_scan_offset():
-    data = load_json(SCAN_STATE_FILE, {})
-    try:
-        return max(0, int(data.get("offset", 0)))
-    except (TypeError, ValueError, AttributeError):
-        return 0
-
-
-def save_scan_offset(offset):
-    save_json(SCAN_STATE_FILE, {"offset": offset})
-
+# ================= MAIN =================
 
 def main():
-    now = datetime.now(timezone.utc).strftime(
-        "%Y-%m-%d %H:%M UTC"
-    )
+
+    now = tehran_now()
+
+    print("Tehran time:", now.strftime("%Y-%m-%d %H:%M"))
+
+    # توقف کامل خارج از ساعات بازار
+    if not market_is_open():
+
+        print("MARKET CLOSED - NO SCAN")
+
+        return
 
     send_telegram(
         "🤖 ATI BOURSE BOT\n"
@@ -440,16 +528,18 @@ def main():
         "استراتژی: کراس صعودی تنکانسن 9 و کیجونسن 26\n"
         "تعداد نماد هدف: 300\n"
         "بررسی چرخشی: هر اجرا 30 نماد\n"
+        "ساعات فعالیت: 09:00 تا 12:30 تهران\n"
         "معامله خودکار: خاموش\n"
-        f"زمان: {now}"
+        f"زمان: {now.strftime('%Y-%m-%d %H:%M')}"
     )
 
     try:
+
         all_markets = get_market_list()
         total_markets = len(all_markets)
 
         if total_markets == 0:
-            raise RuntimeError("فهرست نمادهای بازار خالی است.")
+            raise RuntimeError("فهرست نمادها خالی است.")
 
         offset = load_scan_offset() % total_markets
         end = offset + BATCH_SIZE
@@ -462,7 +552,10 @@ def main():
                 + all_markets[:end - total_markets]
             )
 
-        next_offset = (offset + len(markets)) % total_markets
+        next_offset = (
+            offset + len(markets)
+        ) % total_markets
+
         save_scan_offset(next_offset)
 
         send_telegram(
@@ -474,12 +567,19 @@ def main():
         )
 
         state = load_state()
+
         signals = []
         checked = 0
         errors = 0
         insufficient = 0
 
         for item in markets:
+
+            # در صورت رسیدن به پایان بازار، اسکن متوقف شود
+            if not market_is_open():
+                print("Market closed during scan.")
+                break
+
             code = extract_code(item)
 
             if not code:
@@ -488,13 +588,17 @@ def main():
             checked += 1
 
             try:
+
                 candles = get_hourly_candles(code)
+
                 cross = check_tenkan_kijun_cross(candles)
 
                 if len(candles) < KIJUN + 1:
                     insufficient += 1
 
-                if cross:
+                # کنترل مجدد ساعت قبل از ارسال سیگنال
+                if cross and market_is_open():
+
                     cross_id = cross["cross_id"]
 
                     if state.get(code) == cross_id:
@@ -518,16 +622,21 @@ def main():
                         "معامله خودکار: خاموش"
                     )
 
-                    if send_telegram(message):
+                    if market_is_open() and send_telegram(message):
+
                         state[code] = cross_id
                         save_state(state)
+
                         signals.append(name)
 
             except Exception as error:
+
                 errors += 1
+
                 print("Symbol error:", code, error)
 
             if checked % 10 == 0 or checked == len(markets):
+
                 send_telegram(
                     "⏳ گزارش پیشرفت ATI\n"
                     f"بررسی‌شده: {checked} از {len(markets)}\n"
@@ -552,7 +661,9 @@ def main():
         send_telegram(summary)
 
     except Exception:
+
         error = traceback.format_exc()
+
         print(error)
 
         send_telegram(
