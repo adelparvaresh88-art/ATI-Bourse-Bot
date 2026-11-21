@@ -11,12 +11,10 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 MAX_MARKETS = 10
 HISTORY_DAYS = 24
-CACHE_DIR = "hourly_cache"
-
 TENKAN = 9
 KIJUN = 26
-SENKOU_B = 52
-RECENT_CROSS_BARS = 3
+CACHE_DIR = "hourly_cache"
+STATE_FILE = os.path.join(CACHE_DIR, "cross_state.json")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 Chrome/120.0 Safari/537.36",
@@ -39,7 +37,7 @@ def send_telegram(message):
             data={"chat_id": CHAT_ID, "text": message},
             timeout=15
         )
-        print("Telegram:", response.status_code, response.text[:300])
+        print("Telegram:", response.status_code, response.text[:200])
         return response.ok
     except Exception as error:
         print("Telegram error:", error)
@@ -149,7 +147,6 @@ def get_market_list():
                 params=params if is_json else None,
                 timeout=20
             )
-
             response.raise_for_status()
 
             rows = (
@@ -176,17 +173,13 @@ def get_market_list():
 def get_hourly_candles(ins_code):
     os.makedirs(CACHE_DIR, exist_ok=True)
 
-    cache_path = os.path.join(
-        CACHE_DIR, f"{ins_code}.json"
-    )
+    cache_path = os.path.join(CACHE_DIR, f"{ins_code}.json")
 
     try:
         with open(cache_path, "r", encoding="utf-8") as file:
             cache = json.load(file)
-
         if not isinstance(cache, dict):
             cache = {}
-
     except (OSError, ValueError):
         cache = {}
 
@@ -217,7 +210,6 @@ def get_hourly_candles(ins_code):
         return []
 
     for day in dates:
-
         if day in cache and day != dates[0]:
             continue
 
@@ -231,7 +223,6 @@ def get_hourly_candles(ins_code):
             response.raise_for_status()
 
             result = response.json()
-
             trades = (
                 result.get("tradeHistory", [])
                 if isinstance(result, dict)
@@ -240,10 +231,6 @@ def get_hourly_candles(ins_code):
 
         except Exception as error:
             print("Trade history error:", ins_code, day, error)
-
-            if day not in cache:
-                cache[day] = []
-
             continue
 
         buckets = {}
@@ -269,10 +256,8 @@ def get_hourly_candles(ins_code):
                         "high": price,
                         "low": price
                     }
-
                 else:
                     b = buckets[hour]
-
                     b["high"] = max(b["high"], price)
                     b["low"] = min(b["low"], price)
 
@@ -305,7 +290,6 @@ def get_hourly_candles(ins_code):
     try:
         with open(cache_path, "w", encoding="utf-8") as file:
             json.dump(cache, file, ensure_ascii=False)
-
     except OSError as error:
         print("Cache save error:", error)
 
@@ -314,27 +298,28 @@ def get_hourly_candles(ins_code):
     iran_now = datetime.now(timezone.utc) + timedelta(
         hours=3, minutes=30
     )
-
     today = iran_now.strftime("%Y%m%d")
 
     for day in sorted(dates):
         for candle in cache.get(day, []):
-
             hour = int(candle["hour"])
 
-            if day == today and 9 <= iran_now.hour <= 12:
-                if hour == iran_now.hour:
-                    if hour != 12 or iran_now.minute < 30:
+            # کندل ساعت جاری تا بسته‌شدن کامل وارد محاسبه نشود
+            if day == today:
+                if hour == iran_now.hour and 9 <= iran_now.hour <= 12:
+                    if not (hour == 12 and iran_now.hour == 12
+                            and iran_now.minute >= 30):
                         continue
 
             candles.append({
+                "date": day,
+                "hour": hour,
                 "close": float(candle["close"]),
                 "high": float(candle["high"]),
                 "low": float(candle["low"])
             })
 
-    print(f"{ins_code}: {len(candles)} hourly candles")
-
+    print(f"{ins_code}: {len(candles)} closed hourly candles")
     return candles
 
 
@@ -355,102 +340,61 @@ def midpoint(candles, period, end_index):
     return (high + low) / 2
 
 
-def ichimoku_analysis(candles):
-    if len(candles) < SENKOU_B + KIJUN + 5:
-        return False, "کندل کافی نیست", "insufficient"
+def check_tenkan_kijun_cross(candles):
+    # برای بررسی کراس در دو کندل بسته‌شده، حداقل 27 کندل لازم است
+    if len(candles) < KIJUN + 1:
+        return None
 
     last = len(candles) - 1
+    previous = last - 1
 
-    tenkan_values = []
-    kijun_values = []
-    span_a_values = []
-    span_b_values = []
+    tenkan_previous = midpoint(candles, TENKAN, previous)
+    kijun_previous = midpoint(candles, KIJUN, previous)
 
-    for i in range(len(candles)):
+    tenkan_now = midpoint(candles, TENKAN, last)
+    kijun_now = midpoint(candles, KIJUN, last)
 
-        tenkan = midpoint(candles, TENKAN, i)
-        kijun = midpoint(candles, KIJUN, i)
-        span_b = midpoint(candles, SENKOU_B, i)
-
-        tenkan_values.append(tenkan)
-        kijun_values.append(kijun)
-
-        if tenkan is not None and kijun is not None:
-            span_a_values.append((tenkan + kijun) / 2)
-        else:
-            span_a_values.append(None)
-
-        span_b_values.append(span_b)
-
-    cloud_index = last - KIJUN
-
-    if cloud_index < 0:
-        return False, "ابر در دسترس نیست", "insufficient"
-
-    span_a = span_a_values[cloud_index]
-    span_b = span_b_values[cloud_index]
-
-    if span_a is None or span_b is None:
-        return False, "ابر در دسترس نیست", "insufficient"
-
-    cloud_top = max(span_a, span_b)
-
-    price = candles[last]["close"]
-    above_cloud = price > cloud_top
-
-    tenkan_now = tenkan_values[last]
-    kijun_now = kijun_values[last]
-
-    if tenkan_now is None or kijun_now is None:
-        return False, "محاسبه ناموفق", "insufficient"
-
-    bullish = tenkan_now > kijun_now
-
-    cross_found = False
-    cross_index = None
-
-    first = max(
-        KIJUN + 1,
-        last - RECENT_CROSS_BARS + 1
+    values = (
+        tenkan_previous,
+        kijun_previous,
+        tenkan_now,
+        kijun_now
     )
 
-    for i in range(first, last + 1):
+    if any(value is None for value in values):
+        return None
 
-        values = (
-            tenkan_values[i - 1],
-            kijun_values[i - 1],
-            tenkan_values[i],
-            kijun_values[i]
-        )
+    # تنها شرط خرید: کراس صعودی تنکانسن و کیجونسن
+    if (
+        tenkan_previous <= kijun_previous
+        and tenkan_now > kijun_now
+    ):
+        candle = candles[last]
 
-        if any(v is None for v in values):
-            continue
+        return {
+            "tenkan": tenkan_now,
+            "kijun": kijun_now,
+            "price": candle["close"],
+            "cross_id": f"{candle['date']}_{candle['hour']}"
+        }
 
-        if values[0] <= values[1] and values[2] > values[3]:
-            cross_found = True
-            cross_index = i
+    return None
 
-    if above_cloud and bullish and cross_found:
 
-        details = (
-            f"قیمت: {price:.2f}\n"
-            f"تنکان: {tenkan_now:.2f}\n"
-            f"کیجون: {kijun_now:.2f}\n"
-            f"فاصله کراس: {last - cross_index} کندل"
-        )
+def load_state():
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as file:
+            state = json.load(file)
+        return state if isinstance(state, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
-        return True, details, "buy"
 
-    if above_cloud and bullish:
-        return False, "بالای ابر و موقعیت صعودی", "bullish_no_cross"
+def save_state(state):
+    os.makedirs(CACHE_DIR, exist_ok=True)
 
-    if above_cloud:
-        return False, "بالای ابر", "above_cloud"
-
-    if bullish:
-        return False, "تنکان بالای کیجون", "bullish_position"
-
-    return False, "شرایط خرید برقرار نیست", "none"
+    with open(STATE_FILE, "w", encoding="utf-8") as file:
+        json.dump(state, file, ensure_ascii=False)
 
 
 def main():
@@ -461,9 +405,9 @@ def main():
     send_telegram(
         "🤖 ATI BOURSE BOT\n"
         "ربات فعال شد.\n"
-        "تایم‌فریم: یک‌ساعته از معاملات TSETMC\n"
-        "استراتژی: ایچیموکو\n"
-        "حالت: فقط سیگنال خرید\n"
+        "تایم‌فریم: یک‌ساعته TSETMC\n"
+        "استراتژی: فقط کراس تنکانسن و کیجونسن\n"
+        "شرط خرید: کراس صعودی\n"
         "معامله خودکار: خاموش\n"
         f"زمان: {now}"
     )
@@ -478,16 +422,13 @@ def main():
             "تایم‌فریم: یک‌ساعته"
         )
 
+        state = load_state()
         signals = []
         checked = 0
         errors = 0
         insufficient = 0
-        above = 0
-        bullish = 0
-        crosses = 0
 
         for item in markets:
-
             code = extract_code(item)
 
             if not code:
@@ -498,29 +439,17 @@ def main():
             try:
                 candles = get_hourly_candles(code)
 
-                signal, details, status = ichimoku_analysis(
-                    candles
-                )
+                cross = check_tenkan_kijun_cross(candles)
 
-                if status == "insufficient":
+                if len(candles) < KIJUN + 1:
                     insufficient += 1
 
-                elif status == "above_cloud":
-                    above += 1
+                if cross:
+                    cross_id = cross["cross_id"]
 
-                elif status == "bullish_position":
-                    bullish += 1
-
-                elif status == "bullish_no_cross":
-                    above += 1
-                    bullish += 1
-
-                elif status == "buy":
-                    above += 1
-                    bullish += 1
-                    crosses += 1
-
-                if signal:
+                    # جلوگیری از ارسال دوباره همان کراس
+                    if state.get(code) == cross_id:
+                        continue
 
                     name = (
                         item.get("lVal18AFC")
@@ -528,13 +457,22 @@ def main():
                         or code
                     )
 
-                    signals.append(
-                        "🟢 سیگنال خرید ایچیموکو\n"
+                    message = (
+                        "🟢 ATI BOURSE BUY\n"
                         f"نماد: {name}\n"
                         f"کد: {code}\n"
                         "تایم‌فریم: یک‌ساعته\n"
-                        f"{details}"
+                        "سیگنال: کراس صعودی تنکانسن و کیجونسن\n"
+                        f"تنکانسن: {cross['tenkan']:.2f}\n"
+                        f"کیجونسن: {cross['kijun']:.2f}\n"
+                        f"قیمت: {cross['price']:.2f}\n"
+                        "معامله خودکار: خاموش"
                     )
+
+                    if send_telegram(message):
+                        state[code] = cross_id
+                        save_state(state)
+                        signals.append(name)
 
             except Exception as error:
                 errors += 1
@@ -548,32 +486,20 @@ def main():
                     f"خطاها: {errors}"
                 )
 
-        print(
-            f"Markets: {len(markets)} | "
-            f"Checked: {checked} | "
-            f"Signals: {len(signals)} | "
-            f"Errors: {errors}"
-        )
-
         summary = (
             "📊 گزارش نهایی ATI BOURSE BOT\n"
             f"نمادهای بررسی‌شده: {checked} از {len(markets)}\n"
-            f"سیگنال خرید: {len(signals)}\n"
-            f"بالای ابر: {above}\n"
-            f"موقعیت صعودی: {bullish}\n"
-            f"کراس اخیر: {crosses}\n"
+            f"سیگنال خرید جدید: {len(signals)}\n"
             f"کندل ناکافی: {insufficient}\n"
             f"خطاها: {errors}\n"
+            "استراتژی: فقط کراس تنکانسن و کیجونسن\n"
             "معامله خودکار: خاموش"
         )
 
         if not signals:
-            summary += "\nدر این اجرا سیگنال خرید پیدا نشد."
+            summary += "\nدر این اجرا کراس صعودی جدید پیدا نشد."
 
         send_telegram(summary)
-
-        for signal in signals[:5]:
-            send_telegram(signal)
 
     except Exception:
         error = traceback.format_exc()
